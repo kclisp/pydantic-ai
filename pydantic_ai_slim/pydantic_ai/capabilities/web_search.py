@@ -5,18 +5,23 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from pydantic_ai.builtin_tools import WebSearchTool, WebSearchUserLocation
+from pydantic_ai.exceptions import UserError
 from pydantic_ai.tools import AgentDepsT, RunContext, Tool
 from pydantic_ai.toolsets import AbstractToolset
 
 from .builtin_or_local import BuiltinOrLocalTool
+
+WebSearchLocalStrategy = Literal['duckduckgo']
+"""Named local strategies accepted by `WebSearch.local`."""
 
 
 @dataclass(init=False)
 class WebSearch(BuiltinOrLocalTool[AgentDepsT]):
     """Web search capability.
 
-    Uses the model's builtin web search when available, falling back to a local
-    function tool (DuckDuckGo by default) when it isn't.
+    Uses the model's builtin web search by default and raises `UserError` on models that
+    don't support it natively. Pass `local=` (a named strategy like `'duckduckgo'`, or a
+    callable) to opt into a local fallback.
     """
 
     search_context_size: Literal['low', 'medium', 'high'] | None
@@ -40,7 +45,7 @@ class WebSearch(BuiltinOrLocalTool[AgentDepsT]):
         builtin: WebSearchTool
         | Callable[[RunContext[AgentDepsT]], Awaitable[WebSearchTool | None] | WebSearchTool | None]
         | bool = True,
-        local: Tool[AgentDepsT] | Callable[..., Any] | Literal[False] | None = None,
+        local: WebSearchLocalStrategy | Tool[AgentDepsT] | Callable[..., Any] | Literal[False] | None = None,
         search_context_size: Literal['low', 'medium', 'high'] | None = None,
         user_location: WebSearchUserLocation | None = None,
         blocked_domains: list[str] | None = None,
@@ -73,29 +78,27 @@ class WebSearch(BuiltinOrLocalTool[AgentDepsT]):
     def _builtin_unique_id(self) -> str:
         return WebSearchTool.kind
 
-    def _default_local(self) -> Tool[AgentDepsT] | AbstractToolset[AgentDepsT] | None:
-        import warnings
-
-        try:
-            from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
-        except ImportError:
-            warnings.warn(
-                'WebSearch local fallback requires the `duckduckgo` optional group — '
-                '`pip install "pydantic-ai-slim[duckduckgo]"`. '
-                'Without it, WebSearch only works with models that support it natively.',
-                UserWarning,
-                stacklevel=2,
-            )
-            return None
-
-        warnings.warn(
-            'WebSearch will stop auto-selecting DuckDuckGo based on package availability in v2. '
-            'To keep this fallback, pass `local=duckduckgo_search_tool()` explicitly. '
-            'To disable the fallback, pass `local=False`.',
-            DeprecationWarning,
-            stacklevel=4,
+    def _resolve_local_strategy(self, name: str) -> Tool[AgentDepsT] | AbstractToolset[AgentDepsT]:
+        if name == 'duckduckgo':
+            try:
+                from pydantic_ai.common_tools.duckduckgo import duckduckgo_search_tool
+            except ImportError as e:
+                raise UserError(
+                    "WebSearch(local='duckduckgo') requires the `duckduckgo` optional group — "
+                    '`pip install "pydantic-ai-slim[duckduckgo]"`.'
+                ) from e
+            return duckduckgo_search_tool()
+        raise UserError(
+            f'WebSearch(local={name!r}) is not a known strategy. '
+            "Supported: 'duckduckgo'. Or pass a Tool/callable directly."
         )
-        return duckduckgo_search_tool()
+
+    def _local_install_hint(self) -> str:
+        return (
+            'Pass a local fallback to use WebSearch with this model:\n'
+            "    WebSearch(local='duckduckgo')   # pip install pydantic-ai-slim[duckduckgo]\n"
+            '    WebSearch(local=my_search_callable)   # for Tavily, Perplexity, etc.'
+        )
 
     def _requires_builtin(self) -> bool:
         return self.blocked_domains is not None or self.allowed_domains is not None or self.max_uses is not None

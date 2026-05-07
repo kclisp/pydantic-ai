@@ -25,8 +25,10 @@ except ImportError:  # pragma: lax no cover
 class MCP(BuiltinOrLocalTool[AgentDepsT]):
     """MCP server capability.
 
-    Uses the model's builtin MCP server support when available, connecting
-    directly via HTTP when it isn't.
+    Defaults to running the MCP server locally via FastMCP — keeps credentials, tracing,
+    and hooks under your control. Pass `builtin=True` to opt into the model provider's
+    built-in MCP support (with local as a fallback for unsupported models), or
+    `builtin=True, local=False` for strict builtin-only.
     """
 
     url: str
@@ -53,8 +55,7 @@ class MCP(BuiltinOrLocalTool[AgentDepsT]):
         *,
         builtin: MCPServerTool
         | Callable[[RunContext[AgentDepsT]], Awaitable[MCPServerTool | None] | MCPServerTool | None]
-        | bool
-        | None = None,
+        | bool = False,
         local: MCPServer | FastMCPToolset[AgentDepsT] | Callable[..., Any] | Literal[False] | None = None,
         id: str | None = None,
         authorization_token: str | None = None,
@@ -62,21 +63,6 @@ class MCP(BuiltinOrLocalTool[AgentDepsT]):
         allowed_tools: list[str] | None = None,
         description: str | None = None,
     ) -> None:
-        # In v2, MCP defaults will flip from "builtin if supported else local" to "local only".
-        # Warn when both kwargs are at their defaults (the only call-site that changes behavior).
-        if builtin is None and local is None:
-            import warnings
-
-            warnings.warn(
-                'MCP() defaults will change in v2: it will run locally via FastMCP instead of '
-                "preferring the model's built-in MCP support. Pass `builtin=True` to keep the "
-                'current builtin-preferred behavior, or `builtin=True, local=False` for builtin-only.',
-                DeprecationWarning,
-                stacklevel=2,
-            )
-        if builtin is None:
-            builtin = True
-
         self.url = url
         self.builtin = builtin
         self.local = local
@@ -112,20 +98,31 @@ class MCP(BuiltinOrLocalTool[AgentDepsT]):
         return f'mcp_server:{self._resolved_id}'
 
     def _default_local(self) -> Tool[AgentDepsT] | AbstractToolset[AgentDepsT] | None:
+        from pydantic_ai.exceptions import UserError
+
         # Merge authorization_token into headers for local connection
         local_headers = dict(self.headers or {})
         if self.authorization_token:
             local_headers['Authorization'] = self.authorization_token
 
         # Transport detection matching _mcp_server_discriminator() in pydantic_ai.mcp
-        if self.url.endswith('/sse'):
-            from pydantic_ai.mcp import MCPServerSSE
+        try:
+            if self.url.endswith('/sse'):
+                from pydantic_ai.mcp import MCPServerSSE
 
-            return MCPServerSSE(self.url, headers=local_headers or None, include_instructions=True)
+                return MCPServerSSE(self.url, headers=local_headers or None, include_instructions=True)
 
-        from pydantic_ai.mcp import MCPServerStreamableHTTP
+            from pydantic_ai.mcp import MCPServerStreamableHTTP
 
-        return MCPServerStreamableHTTP(self.url, headers=local_headers or None, include_instructions=True)
+            return MCPServerStreamableHTTP(self.url, headers=local_headers or None, include_instructions=True)
+        except ImportError as e:
+            raise UserError(
+                'MCP defaults to running locally via FastMCP, but the FastMCP client is not installed.\n\n'
+                'Either install the MCP extras:\n'
+                '    pip install "pydantic-ai-slim[mcp]"\n'
+                "or use only the model's built-in MCP support (no FastMCP needed):\n"
+                "    MCP(url='…', builtin=True, local=False)"
+            ) from e
 
     def get_toolset(self) -> AbstractToolset[AgentDepsT] | None:
         toolset = super().get_toolset()

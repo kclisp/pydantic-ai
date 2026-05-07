@@ -46,11 +46,12 @@ class BuiltinOrLocalTool(AbstractCapability[AgentDepsT]):
     - A callable (`BuiltinToolFunc`): dynamically create the builtin per-run via `RunContext`.
     """
 
-    local: Tool[AgentDepsT] | Callable[..., Any] | AbstractToolset[AgentDepsT] | Literal[False] | None = None
+    local: str | Tool[AgentDepsT] | Callable[..., Any] | AbstractToolset[AgentDepsT] | Literal[False] | None = None
     """Configure the local fallback tool.
 
-    - `None` (default): auto-detect a local fallback via `_default_local`.
+    - `None` (default): use the subclass default (often "no local fallback").
     - `False`: disable the local fallback; only use the builtin.
+    - A `str`: use a named strategy (subclass-specific, e.g. `'duckduckgo'` for `WebSearch`).
     - A `Tool` or `AbstractToolset` instance: use this specific local tool.
     - A bare callable: automatically wrapped in a `Tool`.
     """
@@ -69,11 +70,21 @@ class BuiltinOrLocalTool(AbstractCapability[AgentDepsT]):
                 )
             self.builtin = default
 
-        # Resolve local: None → default, callable → Tool
-        if self.local is None:
+        # Resolve local: str → named strategy, None → subclass default, callable → Tool
+        if isinstance(self.local, str):
+            self.local = self._resolve_local_strategy(self.local)
+        elif self.local is None:
             self.local = self._default_local()
         elif callable(self.local) and not isinstance(self.local, (Tool, AbstractToolset)):
             self.local = Tool(self.local)
+
+        # Final state must have at least one active path. (`builtin=False` with `local=None`
+        # is reachable when a subclass's `_default_local()` returns `None` — e.g. `WebSearch(builtin=False)`.)
+        if self.builtin is False and self.local in (None, False):  # pyright: ignore[reportUnknownMemberType]
+            raise UserError(
+                f'{type(self).__name__}(builtin=False) requires an explicit `local=…` value '
+                f"(e.g. a Tool, callable, or named strategy like 'duckduckgo')."
+            )
 
         # Catch contradictory config: builtin disabled but constraint fields require it
         if self.builtin is False and self._requires_builtin():
@@ -103,7 +114,24 @@ class BuiltinOrLocalTool(AbstractCapability[AgentDepsT]):
         )
 
     def _default_local(self) -> Tool[AgentDepsT] | AbstractToolset[AgentDepsT] | None:
-        """Auto-detect a local fallback. Override in subclasses that have one."""
+        """Default local fallback when `local` is not set. Override in subclasses with a no-dep default."""
+        return None
+
+    def _resolve_local_strategy(self, name: str) -> Tool[AgentDepsT] | AbstractToolset[AgentDepsT]:
+        """Resolve a named string strategy (e.g. `'duckduckgo'`) to a tool/toolset.
+
+        Override in subclasses that accept named strategies. Default raises `UserError`.
+        """
+        raise UserError(
+            f'{type(self).__name__}: no named local strategies are supported. '
+            f'Pass a `Tool`, `AbstractToolset`, or callable as `local=` instead of {name!r}.'
+        )
+
+    def _local_install_hint(self) -> str | None:
+        """Capability-specific hint shown when the builtin is unsupported and no `local` is set.
+
+        Override in subclasses to point users at the available named strategies / extras.
+        """
         return None
 
     def _requires_builtin(self) -> bool:
@@ -130,6 +158,8 @@ class BuiltinOrLocalTool(AbstractCapability[AgentDepsT]):
         local = self.local
         if local is None or local is False or self._requires_builtin():
             return None
+        # str is resolved to a tool/toolset in __post_init__ — narrow for the type-checker
+        assert not isinstance(local, str)
 
         # local is Tool | AbstractToolset after __post_init__ resolution
         toolset: AbstractToolset[AgentDepsT] = local if isinstance(local, AbstractToolset) else FunctionToolset([local])  # pyright: ignore[reportUnknownVariableType]
