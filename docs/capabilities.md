@@ -19,10 +19,10 @@ Pydantic AI ships with several capabilities that cover common needs:
 |---|---|:---:|
 | [`Thinking`][pydantic_ai.capabilities.Thinking] | Enables model [thinking/reasoning](thinking.md) at configurable effort | Yes |
 | [`Hooks`][pydantic_ai.capabilities.Hooks] | Decorator-based [lifecycle hook](hooks.md) registration | — |
-| [`WebSearch`][pydantic_ai.capabilities.WebSearch] | Web search — builtin when supported, [local fallback](common-tools.md#duckduckgo-search-tool) with [`duckduckgo` extra](install.md#slim-install) | Yes |
-| [`WebFetch`][pydantic_ai.capabilities.WebFetch] | URL fetching — builtin when supported, [local fallback](common-tools.md#web-fetch-tool) with [`web-fetch` extra](install.md#slim-install) | Yes |
-| [`ImageGeneration`][pydantic_ai.capabilities.ImageGeneration] | Image generation — builtin when supported, subagent fallback via `fallback_model` | Yes |
-| [`MCP`][pydantic_ai.capabilities.MCP] | MCP server — builtin when supported, direct connection otherwise | Yes |
+| [`WebSearch`][pydantic_ai.capabilities.WebSearch] | Web search — builtin by default, optional [local fallback](common-tools.md#duckduckgo-search-tool) via `local='duckduckgo'` | Yes |
+| [`WebFetch`][pydantic_ai.capabilities.WebFetch] | URL fetching — builtin by default, optional [local fallback](common-tools.md#web-fetch-tool) via `local='web_fetch'` | Yes |
+| [`ImageGeneration`][pydantic_ai.capabilities.ImageGeneration] | Image generation — builtin by default, optional subagent fallback via `fallback_model` | Yes |
+| [`MCP`][pydantic_ai.capabilities.MCP] | MCP server — runs locally via FastMCP by default; `builtin=True` opts into the model provider's built-in MCP support | Yes |
 | [`PrepareTools`][pydantic_ai.capabilities.PrepareTools] | Filters or modifies function [tool definitions](tools.md) per step | — |
 | [`PrepareOutputTools`][pydantic_ai.capabilities.PrepareOutputTools] | Filters or modifies [output tool][pydantic_ai.output.ToolOutput] definitions per step | — |
 | [`PrefixTools`][pydantic_ai.capabilities.PrefixTools] | Wraps a capability and prefixes its tool names | Yes |
@@ -118,41 +118,40 @@ See the dedicated [Hooks](hooks.md) page for the full API: decorator and constru
 
 ### Provider-adaptive tools
 
-[`WebSearch`][pydantic_ai.capabilities.WebSearch], [`WebFetch`][pydantic_ai.capabilities.WebFetch], [`ImageGeneration`][pydantic_ai.capabilities.ImageGeneration], and [`MCP`][pydantic_ai.capabilities.MCP] provide model-agnostic access to common tool types. When the model supports the tool natively (as a [builtin tool](builtin-tools.md)), it's used directly. When it doesn't, a local function tool handles it instead — so your agent works across providers without code changes.
+[`WebSearch`][pydantic_ai.capabilities.WebSearch], [`WebFetch`][pydantic_ai.capabilities.WebFetch], [`ImageGeneration`][pydantic_ai.capabilities.ImageGeneration], and [`MCP`][pydantic_ai.capabilities.MCP] provide model-agnostic access to common tool types. Each chooses between a model-side builtin tool and a client-side local tool based on its constructor arguments — there is no auto-detection of installed extras, so the dispatch path is fully determined by your code.
 
-Each accepts `builtin` and `local` keyword arguments to control which side is used:
-
-```python {title="provider_adaptive_tools.py" test="skip"}
+```python {title="provider_adaptive_tools.py" test="skip" lint="skip"}
 from pydantic_ai import Agent
 from pydantic_ai.capabilities import MCP, ImageGeneration, WebFetch, WebSearch
 
 agent = Agent(
     'anthropic:claude-sonnet-4-6',
     capabilities=[
-        # Auto-detects DuckDuckGo as local fallback
-        WebSearch(),
-        # Auto-detects markdownify-based fetch as local fallback
-        WebFetch(),
-        # Builtin when the model supports it; falls back to a subagent
-        # running the specified LLM with image generation support
+        # Builtin only — raises on models without web search support unless `local=` is set
+        WebSearch(local='duckduckgo'),
+        # Builtin only — raises on models without web fetch support unless `local=` is set
+        WebFetch(local='web_fetch'),
+        # Builtin when the model supports it; subagent fallback via `fallback_model`
         ImageGeneration(fallback_model='openai-responses:gpt-5.4'),
-        # Auto-detects transport from URL
+        # Local-only via FastMCP (default) — keeps credentials, hooks, and tracing client-side
         MCP(url='https://mcp.example.com/api'),
     ],
 )
 ```
 
-To force builtin-only (errors on unsupported models instead of falling back to local):
+The default for `MCP` is intentionally **opposite** the others: MCP carries credentials, so it runs locally unless you opt into the provider's built-in MCP support. To opt into builtin-preferred dispatch (with local as fallback for unsupported models):
 
-```python {title="builtin_only.py" test="skip" lint="skip"}
-MCP(url='https://mcp.example.com/api', local=False)
+```python {title="mcp_builtin.py" test="skip" lint="skip"}
+MCP(url='https://mcp.example.com/api', builtin=True)
 ```
 
-To force local-only (never use the builtin, even when the model supports it):
+Strict builtin-only (no local — does not require FastMCP):
 
-```python {title="local_only.py" test="skip" lint="skip"}
-MCP(url='https://mcp.example.com/api', builtin=False)
+```python {title="mcp_builtin_only.py" test="skip" lint="skip"}
+MCP(url='https://mcp.example.com/api', builtin=True, local=False)
 ```
+
+For `WebSearch` and `WebFetch`, the `local=` argument accepts a named strategy (`'duckduckgo'`, `'web_fetch'`), a callable (e.g., a Tavily / Perplexity / Brave wrapper), a [`Tool`][pydantic_ai.tools.Tool], or an [`AbstractToolset`][pydantic_ai.toolsets.AbstractToolset]. Without `local=`, the capability raises a [`UserError`][pydantic_ai.exceptions.UserError] on models that don't support the builtin.
 
 Some constraint fields require the builtin because the local fallback can't enforce them. When these are set and the model doesn't support the builtin, a [`UserError`][pydantic_ai.exceptions.UserError] is raised. For example, [`WebSearch`][pydantic_ai.capabilities.WebSearch] domain constraints require the builtin, while [`WebFetch`][pydantic_ai.capabilities.WebFetch] enforces them locally:
 
@@ -161,7 +160,7 @@ Some constraint fields require the builtin because the local fallback can't enfo
 WebSearch(allowed_domains=['example.com'])
 
 # Only fetch example.com — enforced locally when builtin is unavailable
-WebFetch(allowed_domains=['example.com'])
+WebFetch(allowed_domains=['example.com'], local='web_fetch')
 ```
 
 All of these capabilities are subclasses of [`BuiltinOrLocalTool`][pydantic_ai.capabilities.BuiltinOrLocalTool], which you can use directly or subclass to build your own provider-adaptive tools. For example, to pair [`CodeExecutionTool`][pydantic_ai.builtin_tools.CodeExecutionTool] with a local fallback:
