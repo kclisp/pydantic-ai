@@ -3192,29 +3192,6 @@ async def test_output_tool_events():
                     timestamp=IsNow(tz=timezone.utc),
                 )
             ),
-            FunctionToolCallEvent(
-                part=ToolCallPart(
-                    tool_name='final_result',
-                    args={'bad_value': 'invalid'},
-                    tool_call_id=IsStr(),
-                ),
-                args_valid=False,
-            ),
-            FunctionToolResultEvent(
-                result=RetryPromptPart(
-                    tool_name='final_result',
-                    content=[
-                        {
-                            'type': 'missing',
-                            'loc': ('value',),
-                            'msg': 'Field required',
-                            'input': {'bad_value': 'invalid'},
-                        }
-                    ],
-                    tool_call_id=IsStr(),
-                    timestamp=IsNow(tz=timezone.utc),
-                )
-            ),
             OutputToolCallEvent(
                 part=ToolCallPart(
                     tool_name='final_result',

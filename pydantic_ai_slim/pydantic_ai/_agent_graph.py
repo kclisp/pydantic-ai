@@ -1395,15 +1395,8 @@ def _emit_output_tool_events(
     output_parts: list[_messages.ModelRequestPart],
     *,
     args_valid: bool | None = None,
-    legacy: bool = False,
 ) -> Iterator[_messages.HandleResponseEvent]:
-    """Yield call+result events for an output tool call, and append the result to `output_parts`.
-
-    Always yields the new `OutputToolCallEvent` / `OutputToolResultEvent`. If `legacy` is `True`
-    (used on failure paths that emitted `FunctionToolCallEvent` / `FunctionToolResultEvent` before
-    these new events were introduced), also yields the legacy events for backward compatibility.
-    The legacy events will stop firing for output tools in v2.
-    """
+    """Yield call+result events for an output tool call, and append the result to `output_parts`."""
     part = _messages.ToolReturnPart(
         tool_name=call.tool_name,
         content=message,
@@ -1412,26 +1405,6 @@ def _emit_output_tool_events(
     output_parts.append(part)
     yield _messages.OutputToolCallEvent(call, args_valid=args_valid)
     yield _messages.OutputToolResultEvent(part)
-    if legacy:
-        yield from _emit_legacy_output_tool_function_events(call, part, args_valid=args_valid)
-
-
-def _emit_legacy_output_tool_function_events(
-    call: _messages.ToolCallPart,
-    return_or_retry_part: _messages.ToolReturnPart | _messages.RetryPromptPart,
-    *,
-    args_valid: bool | None,
-) -> Iterator[_messages.HandleResponseEvent]:
-    """Yield legacy `FunctionToolCallEvent` / `FunctionToolResultEvent` for an output tool call.
-
-    These keep firing on output-tool failure paths (skipped, validation/execution failure triggering
-    a retry) for backward compatibility, so consumers matching the legacy event types still see them.
-    They will stop firing in v2; users should match `OutputToolCallEvent` / `OutputToolResultEvent`
-    (or the shared `BaseToolCallEvent` / `BaseToolResultEvent`) instead. No runtime warning is fired
-    so that already-migrated consumers don't see noise on every output-tool retry.
-    """
-    yield _messages.FunctionToolCallEvent(call, args_valid=args_valid)
-    yield _messages.FunctionToolResultEvent(return_or_retry_part)
 
 
 async def process_tool_calls(  # noqa: C901
@@ -1473,7 +1446,6 @@ async def process_tool_calls(  # noqa: C901
                 'Output tool not used - a final result was already processed.',
                 output_parts,
                 args_valid=None,
-                legacy=True,
             ):
                 yield event
         # No final result yet, or exhaustive strategy processes all output tools
@@ -1492,7 +1464,6 @@ async def process_tool_calls(  # noqa: C901
                         'Output tool not used - output failed validation.',
                         output_parts,
                         args_valid=False,
-                        legacy=True,
                     ):
                         yield event
                     continue
@@ -1511,7 +1482,6 @@ async def process_tool_calls(  # noqa: C901
                         'Output tool not used - output failed validation.',
                         output_parts,
                         args_valid=False,
-                        legacy=True,
                     ):
                         yield event
                     continue
@@ -1519,10 +1489,6 @@ async def process_tool_calls(  # noqa: C901
                 yield _messages.OutputToolCallEvent(call, args_valid=False)
                 output_parts.append(validated.validation_error.tool_retry)
                 yield _messages.OutputToolResultEvent(validated.validation_error.tool_retry)
-                for event in _emit_legacy_output_tool_function_events(
-                    call, validated.validation_error.tool_retry, args_valid=False
-                ):
-                    yield event
                 ctx.state.output_retries_used += 1
                 continue
 
@@ -1536,7 +1502,6 @@ async def process_tool_calls(  # noqa: C901
                         'Output tool not used - output function execution failed.',
                         output_parts,
                         args_valid=True,
-                        legacy=True,
                     ):
                         yield event
                     continue
@@ -1551,8 +1516,6 @@ async def process_tool_calls(  # noqa: C901
                 yield _messages.OutputToolCallEvent(call, args_valid=True)
                 output_parts.append(e.tool_retry)
                 yield _messages.OutputToolResultEvent(e.tool_retry)
-                for event in _emit_legacy_output_tool_function_events(call, e.tool_retry, args_valid=True):
-                    yield event
                 ctx.state.output_retries_used += 1
                 continue
 
