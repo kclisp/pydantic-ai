@@ -4337,7 +4337,7 @@ class TestMultipleToolCalls:
         )
 
     def test_early_strategy_with_final_result_in_middle(self):
-        """Test that 'early' strategy stops at first final result, regardless of position."""
+        """Test that 'early' strategy runs tools before the final result and skips tools after."""
         tool_called: list[str] = []
 
         def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
@@ -4347,7 +4347,6 @@ class TestMultipleToolCalls:
                     ToolCallPart('regular_tool', {'x': 1}),
                     ToolCallPart('final_result', {'value': 'final'}),
                     ToolCallPart('another_tool', {'y': 2}),
-                    ToolCallPart('unknown_tool', {'value': '???'}),
                     ToolCallPart('deferred_tool', {'x': 5}),
                 ],
             )
@@ -4355,8 +4354,8 @@ class TestMultipleToolCalls:
         agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='early')
 
         @agent.tool_plain
-        def regular_tool(x: int) -> int:  # pragma: no cover
-            """A regular tool that should not be called."""
+        def regular_tool(x: int) -> int:
+            """A regular tool that runs before the final result."""
             tool_called.append('regular_tool')
             return x
 
@@ -4375,8 +4374,8 @@ class TestMultipleToolCalls:
 
         result = agent.run_sync('test early strategy with final result in middle')
 
-        # Verify no tools were called
-        assert tool_called == []
+        # Tools before the final result run; tools after are skipped.
+        assert tool_called == ['regular_tool']
 
         # Verify we got appropriate tool returns
         assert result.all_messages() == snapshot(
@@ -4396,14 +4395,13 @@ class TestMultipleToolCalls:
                         ToolCallPart(tool_name='regular_tool', args={'x': 1}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='final_result', args={'value': 'final'}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='another_tool', args={'y': 2}, tool_call_id=IsStr()),
-                        ToolCallPart(tool_name='unknown_tool', args={'value': '???'}, tool_call_id=IsStr()),
                         ToolCallPart(
                             tool_name='deferred_tool',
                             args={'x': 5},
                             tool_call_id=IsStr(),
                         ),
                     ],
-                    usage=RequestUsage(input_tokens=58, output_tokens=22),
+                    usage=RequestUsage(input_tokens=58, output_tokens=17),
                     model_name='function:return_model:',
                     timestamp=IsNow(tz=timezone.utc),
                     run_id=IsStr(),
@@ -4412,26 +4410,20 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
+                            tool_name='regular_tool',
+                            content=1,
+                            tool_call_id=IsStr(),
+                            timestamp=IsNow(tz=timezone.utc),
+                        ),
+                        ToolReturnPart(
                             tool_name='final_result',
                             content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='regular_tool',
-                            content='Tool not executed - a final result was already processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsDatetime(),
-                        ),
-                        ToolReturnPart(
                             tool_name='another_tool',
                             content='Tool not executed - a final result was already processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=timezone.utc),
-                        ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
@@ -4965,7 +4957,6 @@ class TestMultipleToolCalls:
                     ToolCallPart('regular_tool', {'x': 1}),
                     ToolCallPart('final_result', {'value': 'final'}),
                     ToolCallPart('another_tool', {'y': 2}),
-                    ToolCallPart('unknown_tool', {'value': '???'}),
                     ToolCallPart('deferred_tool', {'x': 5}),
                 ],
             )
@@ -5000,7 +4991,9 @@ class TestMultipleToolCalls:
         # Verify we got the correct final result
         assert result.output.value == 'final'
 
-        # Verify we got appropriate tool returns
+        # Verify we got appropriate tool returns. Tools execute in model emission order;
+        # under graceful we skip remaining output tools but continue running function
+        # tools after the final result is set.
         assert result.all_messages() == snapshot(
             [
                 ModelRequest(
@@ -5019,14 +5012,13 @@ class TestMultipleToolCalls:
                         ToolCallPart(tool_name='regular_tool', args={'x': 1}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='final_result', args={'value': 'final'}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='another_tool', args={'y': 2}, tool_call_id=IsStr()),
-                        ToolCallPart(tool_name='unknown_tool', args={'value': '???'}, tool_call_id=IsStr()),
                         ToolCallPart(
                             tool_name='deferred_tool',
                             args={'x': 5},
                             tool_call_id=IsStr(),
                         ),
                     ],
-                    usage=RequestUsage(input_tokens=58, output_tokens=22),
+                    usage=RequestUsage(input_tokens=58, output_tokens=17),
                     model_name='function:return_model:',
                     timestamp=IsNow(tz=timezone.utc),
                     run_id=IsStr(),
@@ -5035,26 +5027,20 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=timezone.utc),
-                        ),
-                        ToolReturnPart(
                             tool_name='regular_tool',
                             content=1,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='another_tool',
-                            content=2,
+                            tool_name='final_result',
+                            content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
+                        ToolReturnPart(
+                            tool_name='another_tool',
+                            content=2,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
@@ -5084,7 +5070,6 @@ class TestMultipleToolCalls:
                     ToolCallPart('final_result', {'value': 'first'}),
                     ToolCallPart('another_tool', {'y': 2}),
                     ToolCallPart('final_result', {'value': 'second'}),
-                    ToolCallPart('unknown_tool', {'value': '???'}),
                     ToolCallPart('deferred_tool', {'x': 4}),
                 ],
             )
@@ -5118,7 +5103,7 @@ class TestMultipleToolCalls:
         # Verify all regular tools were called
         assert sorted(tool_called) == sorted(['regular_tool', 'another_tool'])
 
-        # Verify we got tool returns in the correct order
+        # Verify we got tool returns in the model's emission order
         assert result.all_messages() == snapshot(
             [
                 ModelRequest(
@@ -5133,14 +5118,13 @@ class TestMultipleToolCalls:
                         ToolCallPart(tool_name='final_result', args={'value': 'first'}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='another_tool', args={'y': 2}, tool_call_id=IsStr()),
                         ToolCallPart(tool_name='final_result', args={'value': 'second'}, tool_call_id=IsStr()),
-                        ToolCallPart(tool_name='unknown_tool', args={'value': '???'}, tool_call_id=IsStr()),
                         ToolCallPart(
                             tool_name='deferred_tool',
                             args={'x': 4},
                             tool_call_id=IsStr(),
                         ),
                     ],
-                    usage=RequestUsage(input_tokens=53, output_tokens=27),
+                    usage=RequestUsage(input_tokens=53, output_tokens=22),
                     model_name='function:return_model:',
                     timestamp=IsNow(tz=timezone.utc),
                     run_id=IsStr(),
@@ -5149,29 +5133,26 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=timezone.utc),
-                        ),
-                        ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=timezone.utc),
-                        ),
-                        ToolReturnPart(
                             tool_name='regular_tool',
                             content=42,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='another_tool', content=2, tool_call_id=IsStr(), timestamp=IsNow(tz=timezone.utc)
+                            tool_name='final_result',
+                            content='Final result processed.',
+                            tool_call_id=IsStr(),
+                            timestamp=IsNow(tz=timezone.utc),
                         ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
+                        ToolReturnPart(
+                            tool_name='another_tool',
+                            content=2,
+                            tool_call_id=IsStr(),
+                            timestamp=IsNow(tz=timezone.utc),
+                        ),
+                        ToolReturnPart(
+                            tool_name='final_result',
+                            content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
@@ -5273,27 +5254,40 @@ class TestMultipleToolCalls:
         )
 
     def test_exhaustive_strategy_invalid_first_valid_second_output(self):
-        """Test that exhaustive strategy uses the second valid output when the first is invalid."""
+        """Test exhaustive when the first output retries and the second succeeds in the same batch.
+
+        Retry-wins: the first output's `ModelRetry` suppresses the second output's
+        success and surfaces the retry to the model on the next round. The second
+        output's `ToolReturnPart` is rewritten to explain the suppression.
+        """
         output_tools_called: list[str] = []
+        call_count = 0
 
         def process_first(output: OutputType) -> OutputType:
-            """Process first output - will be invalid."""
+            """Process first output - retries on the first attempt, succeeds on the second."""
             output_tools_called.append('first')
-            raise ModelRetry('First output validation failed')
+            if output.value == 'invalid':
+                raise ModelRetry('First output validation failed')
+            return output
 
         def process_second(output: OutputType) -> OutputType:
-            """Process second output - will be valid."""
+            """Process second output - always valid."""
             output_tools_called.append('second')
             return output
 
         def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
             assert info.output_tools is not None
-            return ModelResponse(
-                parts=[
-                    ToolCallPart('first_output', {'value': 'invalid'}),
-                    ToolCallPart('second_output', {'value': 'valid'}),
-                ],
-            )
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart('first_output', {'value': 'invalid'}),
+                        ToolCallPart('second_output', {'value': 'valid'}),
+                    ],
+                )
+            # Retry round: model corrects first_output and stops calling second_output.
+            return ModelResponse(parts=[ToolCallPart('first_output', {'value': 'corrected'})])
 
         agent = Agent(
             FunctionModel(return_model),
@@ -5306,14 +5300,16 @@ class TestMultipleToolCalls:
 
         result = agent.run_sync('test invalid first valid second')
 
-        # Verify the result came from the second output tool (first was invalid)
+        # The retry-wins round corrected the first output; that's the final result.
         assert isinstance(result.output, OutputType)
-        assert result.output.value == 'valid'
+        assert result.output.value == 'corrected'
 
-        # Verify both output tools were called
-        assert output_tools_called == ['first', 'second']
+        # Both output tools fired in the first round; only the corrected first_output
+        # ran in the retry round.
+        assert output_tools_called == ['first', 'second', 'first']
 
-        # Verify we got appropriate messages
+        # First round: retry from first_output suppresses second_output's success;
+        # the second_output's `ToolReturnPart` is rewritten accordingly.
         assert result.all_messages() == snapshot(
             [
                 ModelRequest(
@@ -5343,6 +5339,29 @@ class TestMultipleToolCalls:
                         ),
                         ToolReturnPart(
                             tool_name='second_output',
+                            content='Output tool returned a value but it was not used as the final result because another tool in the same step requires a retry.',
+                            tool_call_id=IsStr(),
+                            timestamp=IsNow(tz=timezone.utc),
+                        ),
+                    ],
+                    timestamp=IsNow(tz=timezone.utc),
+                    run_id=IsStr(),
+                    conversation_id=IsStr(),
+                ),
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(tool_name='first_output', args={'value': 'corrected'}, tool_call_id=IsStr()),
+                    ],
+                    usage=RequestUsage(input_tokens=91, output_tokens=15),
+                    model_name='function:return_model:',
+                    timestamp=IsNow(tz=timezone.utc),
+                    run_id=IsStr(),
+                    conversation_id=IsStr(),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name='first_output',
                             content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
@@ -5628,22 +5647,30 @@ class TestMultipleToolCalls:
         assert result.output.value == 'valid'
 
     def test_multiple_final_result_are_validated_correctly(self):
-        """Tests that if multiple final results are returned, but one fails validation, the other is used."""
+        """Tests that when multiple final results are returned and one fails validation,
+        retry-wins suppresses the other's success and surfaces the validation error
+        to the model on the next round."""
+        call_count = 0
 
         def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
             assert info.output_tools is not None
-            return ModelResponse(
-                parts=[
-                    ToolCallPart('final_result', {'bad_value': 'first'}, tool_call_id='first'),
-                    ToolCallPart('final_result', {'value': 'second'}, tool_call_id='second'),
-                ],
-            )
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart('final_result', {'bad_value': 'first'}, tool_call_id='first'),
+                        ToolCallPart('final_result', {'value': 'second'}, tool_call_id='second'),
+                    ],
+                )
+            # Retry round: model corrects the first call's args.
+            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'corrected'}, tool_call_id='retry')])
 
         agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='early')
         result = agent.run_sync('test multiple final results')
 
-        # Verify the result came from the second final tool
-        assert result.output.value == 'second'
+        # The corrected retry is the final result.
+        assert result.output.value == 'corrected'
 
         # Verify we got appropriate tool returns
         assert result.new_messages() == snapshot(
@@ -5682,9 +5709,32 @@ class TestMultipleToolCalls:
                         ),
                         ToolReturnPart(
                             tool_name='final_result',
-                            content='Final result processed.',
+                            content='Output tool returned a value but it was not used as the final result because another tool in the same step requires a retry.',
                             timestamp=IsNow(tz=timezone.utc),
                             tool_call_id='second',
+                        ),
+                    ],
+                    timestamp=IsNow(tz=timezone.utc),
+                    run_id=IsStr(),
+                    conversation_id=IsStr(),
+                ),
+                ModelResponse(
+                    parts=[
+                        ToolCallPart(tool_name='final_result', args={'value': 'corrected'}, tool_call_id='retry'),
+                    ],
+                    usage=RequestUsage(input_tokens=109, output_tokens=15),
+                    model_name='function:return_model:',
+                    timestamp=IsNow(tz=timezone.utc),
+                    run_id=IsStr(),
+                    conversation_id=IsStr(),
+                ),
+                ModelRequest(
+                    parts=[
+                        ToolReturnPart(
+                            tool_name='final_result',
+                            content='Final result processed.',
+                            timestamp=IsNow(tz=timezone.utc),
+                            tool_call_id='retry',
                         ),
                     ],
                     timestamp=IsNow(tz=timezone.utc),
@@ -5799,6 +5849,160 @@ class TestMultipleToolCalls:
 
         assert isinstance(result.output, OutputType)
         assert result.output.value == 'valid'
+
+    def test_exhaustive_strategy_runs_function_tools_around_output_in_emission_order(self):
+        """Function tools surrounding an output tool execute in the order the model emitted them."""
+        execution_order: list[str] = []
+
+        def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            assert info.output_tools is not None
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('log_attempt', {'note': 'before'}),
+                    ToolCallPart('final_result', {'value': 'done'}),
+                    ToolCallPart('log_attempt', {'note': 'after'}),
+                ],
+            )
+
+        agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='exhaustive')
+
+        @agent.tool_plain
+        def log_attempt(note: str) -> str:
+            execution_order.append(note)
+            return note
+
+        result = agent.run_sync('test')
+
+        # The output tool runs in line with its emission position.
+        assert execution_order == ['before', 'after']
+        assert isinstance(result.output, OutputType)
+        assert result.output.value == 'done'
+
+        # The message history reflects the emission order, with the output tool sandwiched
+        # between the two function tool calls.
+        last_request = result.all_messages()[-1]
+        assert isinstance(last_request, ModelRequest)
+        assert [(part.tool_name, part.content) for part in last_request.parts if isinstance(part, ToolReturnPart)] == [
+            ('log_attempt', 'before'),
+            ('final_result', 'Final result processed.'),
+            ('log_attempt', 'after'),
+        ]
+
+    def test_exhaustive_retry_wins_suppresses_final_result_on_function_tool_retry(self):
+        """A function tool's `ModelRetry` alongside a successful output tool suppresses
+        `final_result` and surfaces the retry to the model on the next round."""
+        call_count = 0
+
+        def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            assert info.output_tools is not None
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart('final_result', {'value': 'finished'}),
+                        ToolCallPart('edit', {'text': 'NONEXISTENT'}),
+                    ],
+                )
+            # Retry round: model corrects the edit.
+            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+
+        agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='exhaustive')
+
+        @agent.tool_plain
+        def edit(text: str) -> str:
+            if text == 'NONEXISTENT':
+                raise ModelRetry('Anchor not found.')
+            return f'Edited: {text}'
+
+        result = agent.run_sync('test')
+
+        # Retry-wins forced a retry round; the final result comes from there.
+        assert isinstance(result.output, OutputType)
+        assert result.output.value == 'finished'
+        assert call_count == 2
+
+        # The first round's `ToolReturnPart` for the suppressed output tool was rewritten.
+        messages = result.all_messages()
+        first_round_request = messages[2]
+        assert isinstance(first_round_request, ModelRequest)
+        suppressed_returns = [
+            part
+            for part in first_round_request.parts
+            if isinstance(part, ToolReturnPart) and part.tool_name == 'final_result'
+        ]
+        assert len(suppressed_returns) == 1
+        assert suppressed_returns[0].content == (
+            'Output tool returned a value but it was not used as the final result '
+            'because another tool in the same step requires a retry.'
+        )
+        # The retry from `edit` is also present.
+        assert any(isinstance(part, RetryPromptPart) and part.tool_name == 'edit' for part in first_round_request.parts)
+
+    def test_graceful_retry_wins_suppresses_final_result_on_function_tool_retry(self):
+        """Retry-wins fires under `graceful` too: a function tool's `ModelRetry` suppresses
+        `final_result` even though `graceful` would normally still execute function tools."""
+        call_count = 0
+
+        def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            assert info.output_tools is not None
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart('final_result', {'value': 'finished'}),
+                        ToolCallPart('edit', {'text': 'NONEXISTENT'}),
+                    ],
+                )
+            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+
+        agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='graceful')
+
+        @agent.tool_plain
+        def edit(text: str) -> str:
+            if text == 'NONEXISTENT':
+                raise ModelRetry('Anchor not found.')
+            return f'Edited: {text}'
+
+        result = agent.run_sync('test')
+
+        assert isinstance(result.output, OutputType)
+        assert result.output.value == 'finished'
+        assert call_count == 2
+
+    def test_early_retry_wins_when_function_tool_before_output_retries(self):
+        """Retry-wins fires under `early` when a function tool emitted before the output
+        tool raises `ModelRetry`. The output tool still runs (it executes in emission order),
+        but its `final_result` is suppressed and the retry surfaces to the model."""
+        call_count = 0
+
+        def return_model(_: list[ModelMessage], info: AgentInfo) -> ModelResponse:
+            nonlocal call_count
+            call_count += 1
+            assert info.output_tools is not None
+            if call_count == 1:
+                return ModelResponse(
+                    parts=[
+                        ToolCallPart('edit', {'text': 'NONEXISTENT'}),
+                        ToolCallPart('final_result', {'value': 'finished'}),
+                    ],
+                )
+            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+
+        agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='early')
+
+        @agent.tool_plain
+        def edit(text: str) -> str:
+            if text == 'NONEXISTENT':
+                raise ModelRetry('Anchor not found.')
+            return f'Edited: {text}'
+
+        result = agent.run_sync('test')
+
+        assert isinstance(result.output, OutputType)
+        assert result.output.value == 'finished'
+        assert call_count == 2
 
     # NOTE: When changing tests in this class:
     # 1. Follow the existing order

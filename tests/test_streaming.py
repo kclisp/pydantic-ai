@@ -1486,7 +1486,13 @@ class TestMultipleToolCalls:
         )
 
     async def test_early_strategy_with_final_result_in_middle(self):
-        """Test that 'early' strategy stops at first final result, regardless of position."""
+        """Test that 'early' strategy stops at first final result, regardless of position.
+
+        Under `run_stream`, `final_result` is set as soon as the streamed output tool
+        is detected. Tools emitted before AND after the output tool are therefore all
+        skipped; this differs from the non-streaming `early` semantics where tools
+        emitted before the output tool would still execute.
+        """
         tool_called: list[str] = []
 
         async def sf(_: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str | DeltaToolCalls]:
@@ -1494,8 +1500,7 @@ class TestMultipleToolCalls:
             yield {1: DeltaToolCall('regular_tool', '{"x": 1}')}
             yield {2: DeltaToolCall('final_result', '{"value": "final"}')}
             yield {3: DeltaToolCall('another_tool', '{"y": 2}')}
-            yield {4: DeltaToolCall('unknown_tool', '{"value": "???"}')}
-            yield {5: DeltaToolCall('deferred_tool', '{"x": 5}')}
+            yield {4: DeltaToolCall('deferred_tool', '{"x": 5}')}
 
         agent = Agent(FunctionModel(stream_function=sf), output_type=OutputType, end_strategy='early')
 
@@ -1526,7 +1531,9 @@ class TestMultipleToolCalls:
         # Verify no tools were called
         assert tool_called == []
 
-        # Verify we got appropriate tool returns
+        # Verify we got appropriate tool returns. Under streaming, tools execute in
+        # emission order but `final_result` is committed by the streaming layer
+        # before the walk runs, so all surrounding tools are skipped.
         assert messages == snapshot(
             [
                 ModelRequest(
@@ -1558,17 +1565,12 @@ class TestMultipleToolCalls:
                             tool_call_id=IsStr(),
                         ),
                         ToolCallPart(
-                            tool_name='unknown_tool',
-                            args='{"value": "???"}',
-                            tool_call_id=IsStr(),
-                        ),
-                        ToolCallPart(
                             tool_name='deferred_tool',
                             args='{"x": 5}',
                             tool_call_id=IsStr(),
                         ),
                     ],
-                    usage=RequestUsage(input_tokens=50, output_tokens=17),
+                    usage=RequestUsage(input_tokens=50, output_tokens=13),
                     model_name='function::sf',
                     timestamp=IsNow(tz=datetime.timezone.utc),
                     run_id=IsStr(),
@@ -1577,26 +1579,20 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=datetime.timezone.utc),
-                        ),
-                        ToolReturnPart(
                             tool_name='regular_tool',
                             content='Tool not executed - a final result was already processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=datetime.timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='another_tool',
-                            content='Tool not executed - a final result was already processed.',
+                            tool_name='final_result',
+                            content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=datetime.timezone.utc),
                         ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
+                        ToolReturnPart(
+                            tool_name='another_tool',
+                            content='Tool not executed - a final result was already processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=datetime.timezone.utc),
                         ),
@@ -2121,8 +2117,7 @@ class TestMultipleToolCalls:
             yield {1: DeltaToolCall('regular_tool', '{"x": 1}')}
             yield {2: DeltaToolCall('final_result', '{"value": "final"}')}
             yield {3: DeltaToolCall('another_tool', '{"y": 2}')}
-            yield {4: DeltaToolCall('unknown_tool', '{"value": "???"}')}
-            yield {5: DeltaToolCall('deferred_tool', '{"x": 5}')}
+            yield {4: DeltaToolCall('deferred_tool', '{"x": 5}')}
 
         agent = Agent(FunctionModel(stream_function=sf), output_type=OutputType, end_strategy='graceful')
 
@@ -2154,7 +2149,7 @@ class TestMultipleToolCalls:
         # Verify function tools were called but deferred tools were not
         assert sorted(tool_called) == sorted(['regular_tool', 'another_tool'])
 
-        # Verify we got appropriate tool returns
+        # Verify we got appropriate tool returns. Tools execute in model emission order.
         assert messages == snapshot(
             [
                 ModelRequest(
@@ -2186,17 +2181,12 @@ class TestMultipleToolCalls:
                             tool_call_id=IsStr(),
                         ),
                         ToolCallPart(
-                            tool_name='unknown_tool',
-                            args='{"value": "???"}',
-                            tool_call_id=IsStr(),
-                        ),
-                        ToolCallPart(
                             tool_name='deferred_tool',
                             args='{"x": 5}',
                             tool_call_id=IsStr(),
                         ),
                     ],
-                    usage=RequestUsage(input_tokens=50, output_tokens=17),
+                    usage=RequestUsage(input_tokens=50, output_tokens=13),
                     model_name='function::sf',
                     timestamp=IsNow(tz=timezone.utc),
                     run_id=IsStr(),
@@ -2205,26 +2195,20 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            tool_call_id=IsStr(),
-                            timestamp=IsNow(tz=timezone.utc),
-                        ),
-                        ToolReturnPart(
                             tool_name='regular_tool',
                             content=1,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='another_tool',
-                            content=2,
+                            tool_name='final_result',
+                            content='Final result processed.',
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
+                        ToolReturnPart(
+                            tool_name='another_tool',
+                            content=2,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
@@ -2252,8 +2236,7 @@ class TestMultipleToolCalls:
             yield {2: DeltaToolCall('final_result', '{"value": "first"}')}
             yield {3: DeltaToolCall('another_tool', '{"y": 2}')}
             yield {4: DeltaToolCall('final_result', '{"value": "second"}')}
-            yield {5: DeltaToolCall('unknown_tool', '{"value": "???"}')}
-            yield {6: DeltaToolCall('deferred_tool', '{"x": 4}')}
+            yield {5: DeltaToolCall('deferred_tool', '{"x": 4}')}
 
         agent = Agent(FunctionModel(stream_function=sf), output_type=OutputType, end_strategy='exhaustive')
 
@@ -2287,7 +2270,7 @@ class TestMultipleToolCalls:
         # Verify all regular tools were called
         assert sorted(tool_called) == sorted(['regular_tool', 'another_tool'])
 
-        # Verify we got tool returns in the correct order
+        # Verify we got tool returns in the model's emission order
         assert messages == snapshot(
             [
                 ModelRequest(
@@ -2302,10 +2285,9 @@ class TestMultipleToolCalls:
                         ToolCallPart(tool_name='final_result', args='{"value": "first"}', tool_call_id=IsStr()),
                         ToolCallPart(tool_name='another_tool', args='{"y": 2}', tool_call_id=IsStr()),
                         ToolCallPart(tool_name='final_result', args='{"value": "second"}', tool_call_id=IsStr()),
-                        ToolCallPart(tool_name='unknown_tool', args='{"value": "???"}', tool_call_id=IsStr()),
                         ToolCallPart(tool_name='deferred_tool', args='{"x": 4}', tool_call_id=IsStr()),
                     ],
-                    usage=RequestUsage(input_tokens=50, output_tokens=21),
+                    usage=RequestUsage(input_tokens=50, output_tokens=17),
                     model_name='function::sf',
                     timestamp=IsNow(tz=timezone.utc),
                     run_id=IsStr(),
@@ -2314,31 +2296,28 @@ class TestMultipleToolCalls:
                 ModelRequest(
                     parts=[
                         ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            timestamp=IsNow(tz=timezone.utc),
-                            tool_call_id=IsStr(),
-                        ),
-                        ToolReturnPart(
-                            tool_name='final_result',
-                            content='Final result processed.',
-                            timestamp=IsNow(tz=timezone.utc),
-                            tool_call_id=IsStr(),
-                        ),
-                        ToolReturnPart(
                             tool_name='regular_tool',
                             content=42,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
                         ),
                         ToolReturnPart(
-                            tool_name='another_tool', content=2, tool_call_id=IsStr(), timestamp=IsNow(tz=timezone.utc)
+                            tool_name='final_result',
+                            content='Final result processed.',
+                            timestamp=IsNow(tz=timezone.utc),
+                            tool_call_id=IsStr(),
                         ),
-                        RetryPromptPart(
-                            content="Unknown tool name: 'unknown_tool'. Available tools: 'final_result', 'regular_tool', 'another_tool', 'deferred_tool'",
-                            tool_name='unknown_tool',
+                        ToolReturnPart(
+                            tool_name='another_tool',
+                            content=2,
                             tool_call_id=IsStr(),
                             timestamp=IsNow(tz=timezone.utc),
+                        ),
+                        ToolReturnPart(
+                            tool_name='final_result',
+                            content='Final result processed.',
+                            timestamp=IsNow(tz=timezone.utc),
+                            tool_call_id=IsStr(),
                         ),
                         ToolReturnPart(
                             tool_name='deferred_tool',
@@ -2594,7 +2573,10 @@ class TestMultipleToolCalls:
         )
 
     async def test_exhaustive_strategy_with_tool_retry_and_final_result(self):
-        """Test that exhaustive strategy doesn't increment retries when `final_result` exists and `ToolRetryError` occurs."""
+        """Under `run_stream`, retry-wins does NOT fire because `final_result` is committed
+        by the streaming layer the moment the output tool is detected. A subsequent output
+        tool's `ModelRetry` is recorded in the message history but does not trigger another
+        model round — the streamed result is already irrevocable."""
         output_tools_called: list[str] = []
 
         def process_first(output: OutputType) -> OutputType:
@@ -2767,6 +2749,40 @@ class TestMultipleToolCalls:
                 ),
             ]
         )
+
+    async def test_exhaustive_strategy_runs_function_tools_around_output_in_emission_order(self):
+        """Function tools surrounding an output tool execute in the order the model emitted them."""
+        execution_order: list[str] = []
+
+        async def sf(_: list[ModelMessage], info: AgentInfo) -> AsyncIterator[str | DeltaToolCalls]:
+            assert info.output_tools is not None
+            yield {1: DeltaToolCall('log_attempt', '{"note": "before"}')}
+            yield {2: DeltaToolCall('final_result', '{"value": "done"}')}
+            yield {3: DeltaToolCall('log_attempt', '{"note": "after"}')}
+
+        agent = Agent(FunctionModel(stream_function=sf), output_type=OutputType, end_strategy='exhaustive')
+
+        @agent.tool_plain
+        def log_attempt(note: str) -> str:
+            execution_order.append(note)
+            return note
+
+        async with agent.run_stream('test') as result:
+            response = await result.get_output()
+
+        assert execution_order == ['before', 'after']
+        assert isinstance(response, OutputType)
+        assert response.value == 'done'
+
+        # The message history reflects emission order, with the output tool sandwiched
+        # between the function tool calls.
+        last_request = result.all_messages()[-1]
+        assert isinstance(last_request, ModelRequest)
+        assert [(part.tool_name, part.content) for part in last_request.parts if isinstance(part, ToolReturnPart)] == [
+            ('log_attempt', 'before'),
+            ('final_result', 'Final result processed.'),
+            ('log_attempt', 'after'),
+        ]
 
     # NOTE: When changing tests in this class:
     # 1. Follow the existing order
@@ -3060,19 +3076,19 @@ async def test_unknown_tool_call_events():
         [
             FunctionToolCallEvent(
                 part=ToolCallPart(
-                    tool_name='known_tool',
-                    args={'x': 5},
-                    tool_call_id=IsStr(),
-                ),
-                args_valid=True,
-            ),
-            FunctionToolCallEvent(
-                part=ToolCallPart(
                     tool_name='unknown_tool',
                     args={'arg': 'value'},
                     tool_call_id=IsStr(),
                 ),
                 args_valid=False,
+            ),
+            FunctionToolCallEvent(
+                part=ToolCallPart(
+                    tool_name='known_tool',
+                    args={'x': 5},
+                    tool_call_id=IsStr(),
+                ),
+                args_valid=True,
             ),
             FunctionToolResultEvent(
                 result=RetryPromptPart(
@@ -3092,14 +3108,6 @@ async def test_unknown_tool_call_events():
             ),
             FunctionToolCallEvent(
                 part=ToolCallPart(
-                    tool_name='known_tool',
-                    args={'x': 5},
-                    tool_call_id=IsStr(),
-                ),
-                args_valid=True,
-            ),
-            FunctionToolCallEvent(
-                part=ToolCallPart(
                     tool_name='unknown_tool',
                     args={'arg': 'value'},
                     tool_call_id=IsStr(),
@@ -3112,16 +3120,22 @@ async def test_unknown_tool_call_events():
 
 async def test_output_tool_validation_failure_events():
     """Test that output tools that fail validation emit events during streaming."""
+    call_count = 0
 
     def call_final_result_with_bad_data(messages: list[ModelMessage], info: AgentInfo) -> ModelResponse:
-        """Mock function that calls final_result tool with invalid data."""
+        """Mock function that calls final_result tool with invalid data first, then valid data on retry."""
+        nonlocal call_count
+        call_count += 1
         assert info.output_tools is not None
-        return ModelResponse(
-            parts=[
-                ToolCallPart('final_result', {'bad_value': 'invalid'}),  # Invalid field name
-                ToolCallPart('final_result', {'value': 'valid'}),  # Valid field name
-            ]
-        )
+        if call_count == 1:
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('final_result', {'bad_value': 'invalid'}),  # Invalid field name
+                    ToolCallPart('final_result', {'value': 'valid'}),  # Valid field name
+                ]
+            )
+        # Retry round: model corrects its earlier mistake.
+        return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'corrected'})])
 
     agent = Agent(FunctionModel(call_final_result_with_bad_data), output_type=OutputType)
 
@@ -3133,6 +3147,9 @@ async def test_output_tool_validation_failure_events():
                     async for event in event_stream:
                         events.append(event)
 
+    # First round: the bad-data call emits a validation failure event. The good-data
+    # call's success is suppressed by the retry-wins invariant — no completion event.
+    # Second round: the corrected call succeeds (no events for successful output tools).
     assert events == snapshot(
         [
             FunctionToolCallEvent(
@@ -3158,8 +3175,8 @@ async def test_output_tool_validation_failure_events():
                     timestamp=IsNow(tz=timezone.utc),
                 )
             ),
-            # Note: No FunctionToolCallEvent for the successful output tool call
-            # Output tools only emit FunctionToolCallEvent on validation/execution failure
+            # Note: No FunctionToolCallEvent for successful output tool calls.
+            # Output tools only emit FunctionToolCallEvent on validation/execution failure.
         ]
     )
 

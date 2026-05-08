@@ -133,6 +133,8 @@ The example below shows how to stream events and text output. You can also [stre
 
 	These "dangling" tool calls will not be executed unless the agent's [`end_strategy`][pydantic_ai.agent.Agent.end_strategy] is set to `'graceful'` or `'exhaustive'`, and even then their results will not be sent back to the model as the agent run will already be considered completed. In short, if the model returns both tool calls and text, and the agent's output type is `str`, **the tool calls will not run** in streaming mode with the default setting.
 
+    For the same reason, the [retry-wins invariant](output.md#parallel-output-tool-calls) cannot apply: a [`ModelRetry`][pydantic_ai.exceptions.ModelRetry] from a tool emitted later in the same batch is recorded in the message history but does not trigger another model round, because the streamed final result is already committed.
+
     If you want to always keep running the agent when it performs tool calls, and stream all events from the model's streaming response and the agent's execution of tools,
     use [`agent.run_stream_events()`][pydantic_ai.agent.AbstractAgent.run_stream_events] or [`agent.iter()`][pydantic_ai.agent.AbstractAgent.iter] instead, as described in the following sections.
 

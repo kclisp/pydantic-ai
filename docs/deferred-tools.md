@@ -20,6 +20,11 @@ The two flows compose: a handler can resolve a subset of calls and let the rest 
 
 The stop-the-world flow requires `DeferredToolRequests` to be in the `Agent`'s [`output_type`](output.md#structured-output) so that the possible types of the agent run output are correctly inferred. If your agent can also be used in a context where no deferred tools are available and you don't want to deal with that type everywhere you use the agent, you can instead pass the `output_type` argument when you run the agent using [`agent.run()`][pydantic_ai.agent.AbstractAgent.run], [`agent.run_sync()`][pydantic_ai.agent.AbstractAgent.run_sync], [`agent.run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream], or [`agent.iter()`][pydantic_ai.agent.Agent.iter]. Note that the run-time `output_type` overrides the one specified at construction time (for type inference reasons), so you'll need to include the original output type explicitly.
 
+!!! note "Deferred tools batch at the end of the step"
+    Output and function tools execute in the order the model emitted them (see [`end_strategy`](output.md#parallel-output-tool-calls)), but deferred tool calls are the documented exception: they are collected during the walk and either returned as a single `DeferredToolRequests` batch at the end of the step, or resolved inline by the [`HandleDeferredToolCalls`](#resolving-deferred-calls-with-a-handler) capability handler in one shot.
+
+    This keeps the deferred batch surface stable for UI adapters that present approvals as a group, and naturally accommodates function tools that turn out to be deferred mid-execution by raising [`ApprovalRequired`][pydantic_ai.exceptions.ApprovalRequired] or [`CallDeferred`][pydantic_ai.exceptions.CallDeferred].
+
 ## Resolving deferred calls with a handler
 
 The recommended way to handle deferred tool calls is to register a [`HandleDeferredToolCalls`][pydantic_ai.capabilities.HandleDeferredToolCalls] [capability](capabilities.md) whose handler receives the [`DeferredToolRequests`][pydantic_ai.tools.DeferredToolRequests] and returns a [`DeferredToolResults`][pydantic_ai.tools.DeferredToolResults] resolving some or all of them. The tool execution pipeline applies the results inline and the agent run continues in a single call, as if the deferred tools had returned normally.

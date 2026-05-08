@@ -174,9 +174,25 @@ class Agent(AbstractAgent[AgentDepsT, OutputDataT]):
     end_strategy: EndStrategy
     """The strategy for handling multiple tool calls when a final result is found.
 
-    - `'early'` (default): Output tools are executed first. Once a valid final result is found, remaining function and output tool calls are skipped
-    - `'graceful'`: Output tools are executed first. Once a valid final result is found, remaining output tool calls are skipped, but function tools are still executed
-    - `'exhaustive'`: Output tools are executed first, then all function tools are executed. The first valid output tool result becomes the final output
+    Tools execute in the order the model emitted them. Strategies differ only in their
+    stop semantics once an output tool produces a valid final result:
+
+    - `'early'` (default): Stops the run as soon as an output tool produces a valid final result.
+      Function and output tools emitted *after* it are skipped; tools emitted *before* it still run.
+    - `'graceful'`: Skips remaining output tool calls once a valid final result is found,
+      but continues executing function tools.
+    - `'exhaustive'`: Runs every tool call. The first valid output tool result becomes the final output.
+
+    Under all three strategies, if any tool in a batch produces a [`RetryPromptPart`][pydantic_ai.messages.RetryPromptPart]
+    (e.g. via [`ModelRetry`][pydantic_ai.exceptions.ModelRetry] or unknown-tool / argument-validation errors),
+    the final result is suppressed and the retry surfaces to the model on the next round.
+    Deferred tool calls ([external](../deferred-tools.md#external-tool-execution) and
+    [approval-required](../deferred-tools.md#human-in-the-loop-tool-approval)) remain batched at the end of the
+    step rather than being interleaved.
+
+    Under [`run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream] and
+    [`run_stream_sync()`][pydantic_ai.agent.AbstractAgent.run_stream_sync] the streamed final result is
+    committed as soon as it's detected; any later tool retries cannot revoke it.
     """
 
     model_settings: AgentModelSettings[AgentDepsT] | None

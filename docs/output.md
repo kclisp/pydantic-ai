@@ -359,24 +359,33 @@ _(This example is complete, it can be run "as is")_
 
 ##### Parallel Output Tool Calls
 
-When the model calls other tools in parallel with an output tool, you can control how tool calls are executed by setting the agent's [`end_strategy`][pydantic_ai.agent.Agent.end_strategy]:
+**Tools execute in the order the model emitted them, regardless of strategy.** When the model calls other tools in parallel with an output tool, the agent's [`end_strategy`][pydantic_ai.agent.Agent.end_strategy] controls *when to stop*, not *what order to run*:
 
-- `'early'` (default): Output tools are executed first. Once a valid final result is found, remaining function and output tool calls are skipped
-- `'graceful'`: Output tools are executed first. Once a valid final result is found, remaining output tool calls are skipped, but function tools are still executed
-- `'exhaustive'`: Output tools are executed first, then all function tools are executed. The first valid output tool result becomes the final output
+- `'early'` (default): Stop the run as soon as an output tool produces a valid final result. Tools emitted *after* it are skipped; tools emitted *before* it still run.
+- `'graceful'`: Skip remaining output tool calls once a valid final result is found, but continue executing function tools.
+- `'exhaustive'`: Run every tool call. The first valid output tool result becomes the final output.
 
-| Strategy | Function tools | Output tools |
-|---|---|---|
-| `'early'` (default) | Skip remaining | Skip remaining |
-| `'graceful'` | Execute all | Skip remaining |
-| `'exhaustive'` | Execute all | Execute all (first valid result wins) |
+| Strategy | Once an output tool sets the final result… |
+|---|---|
+| `'early'` (default) | Skip everything emitted after the output tool — function and output tools alike. |
+| `'graceful'` | Skip subsequent output tools; keep running function tools. |
+| `'exhaustive'` | Run everything. First valid output tool result wins. |
 
 The `'graceful'` and `'exhaustive'` strategies are useful when function tools have important side effects (like logging, sending notifications, or updating metrics) that should always execute. Use `'graceful'` over `'exhaustive'` when you want to avoid executing additional output tools unnecessarily — for example, when output tools have side effects that should only fire once.
+
+!!! note "Retry-wins: tool retries suppress the final result"
+    Under all three strategies, if any tool in a batch produces a [`RetryPromptPart`][pydantic_ai.messages.RetryPromptPart] (e.g. via [`ModelRetry`][pydantic_ai.exceptions.ModelRetry] from a function tool, or argument validation errors), the final result is suppressed so the model addresses the retries on the next round. The output tool that would have been the final result still records its execution in the message history, but its return part is rewritten to indicate the suppression.
+
+    This means a `ModelRetry` from a function tool is heard even when the model called an output tool in the same response.
+
+[Deferred](deferred-tools.md) tool calls ([external](deferred-tools.md#external-tool-execution) and [approval-required](deferred-tools.md#human-in-the-loop-tool-approval)) remain batched at the end of the step as a documented exception to in-order execution; see the deferred-tools page for details.
 
 !!! warning "Priority of output and deferred tools in streaming methods"
     The [`run_stream()`][pydantic_ai.agent.AbstractAgent.run_stream] and [`run_stream_sync()`][pydantic_ai.agent.AbstractAgent.run_stream_sync] methods will consider the first output that matches the [output type](output.md#structured-output) (which could be text, an [output tool](output.md#tool-output) call, or a [deferred](deferred-tools.md) tool call) to be the final output of the agent run, even when the model generates (additional) tool calls after this "final" output.
 
     This means that if the model calls deferred tools before output tools when using these methods, the deferred tool calls determine the agent run's final output, while the other [run methods](agent.md#running-agents) would have prioritized the tool output.
+
+    For the same reason, the **retry-wins** invariant cannot apply under streaming: the streamed final result is committed the moment it's detected, so a `ModelRetry` from a tool emitted later in the same batch is recorded in the message history but does not trigger another model round.
 
 
 #### Native Output
