@@ -26,7 +26,7 @@ from .toolsets.abstract import AbstractToolset, ToolsetTool
 try:
     from mcp import types as mcp_types
     from mcp.shared import exceptions as mcp_exceptions
-except ImportError as _import_error:  # pragma: no cover
+except ImportError as _import_error:
     raise ImportError(
         'Please install the `mcp` package to use `MCPToolset`, '
         'you can use the `mcp` optional group — `pip install "pydantic-ai-slim[mcp]"`'

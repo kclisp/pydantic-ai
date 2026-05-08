@@ -334,7 +334,7 @@ def rich_prompt_ask(prompt: str, *_args: Any, **_kwargs: Any) -> str:
 class MockMCPServer(AbstractToolset[Any]):
     """Stand-in for `MCPToolset` used as a fixture in doc-example tests.
 
-    Example invocations rarely exercise every method; mark the bodies as `pragma: no cover` so
+    Doc examples rarely exercise every method; the unused bodies carry coverage-skip markers so
     coverage reflects only paths actual examples reach.
     """
 
