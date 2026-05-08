@@ -1635,7 +1635,9 @@ async def process_tool_calls(  # noqa: C901
             # previous step are marked 'skip' and filtered out here.
             if tool_call_results is not None:
                 group = [c for c in group if c.tool_call_id in calls_to_run_results]
-                if not group:  # pragma: no cover  # defensive: every call in this group was already executed in the previous step.
+                if (
+                    not group
+                ):  # pragma: no cover  # defensive: every call in this group was already executed in the previous step.
                     continue
 
             # Under `early`, when `final_result` was set externally (run_stream path),
@@ -1843,7 +1845,9 @@ async def process_tool_calls(  # noqa: C901
         # Locate the suppressed output tool's `ToolReturnPart` and rewrite its content
         # so the model sees an accurate signal on the retry round, instead of a
         # contradictory "Final result processed." alongside the retry prompt.
-        for idx, part in enumerate(output_parts):  # pragma: no branch  # the ToolReturnPart matching `final_result_tool_call_id` is always present once we set `final_result` internally.
+        for idx, part in enumerate(
+            output_parts
+        ):  # pragma: no branch  # the ToolReturnPart matching `final_result_tool_call_id` is always present once we set `final_result` internally.
             if isinstance(part, _messages.ToolReturnPart) and part.tool_call_id == final_result_tool_call_id:
                 output_parts[idx] = dataclasses.replace(
                     part,
