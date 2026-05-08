@@ -1577,6 +1577,16 @@ async def test_dbos_mcp_toolset_get_instructions_falls_back_to_step(dbos: DBOS):
     assert instructions == InstructionPart(content='Be a helpful assistant.', dynamic=True)
 
 
+async def test_dbos_mcp_toolset_get_instructions_uses_local_when_initialized(dbos: DBOS):
+    """When the wrapped MCP toolset is already initialized, the DBOS wrapper short-circuits and returns the local instructions."""
+    run_context = RunContext(deps=None, model=TestModel(), usage=RunUsage())
+
+    # Entering the wrapped toolset populates `_instructions` so the local fast-path returns the part directly.
+    async with _uninit_instructions_toolset.wrapped:
+        instructions = await _uninit_instructions_toolset.get_instructions(run_context)
+    assert instructions == InstructionPart(content='Be a helpful assistant.', dynamic=True)
+
+
 fastmcp_agent = Agent(
     model,
     name='fastmcp_agent',
