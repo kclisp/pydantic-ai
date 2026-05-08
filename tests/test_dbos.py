@@ -29,7 +29,6 @@ from pydantic_ai import (
     TextPart,
     ToolCallPart,
     ToolReturnPart,
-    ToolsetTool,
     UserPromptPart,
 )
 from pydantic_ai.direct import model_request_stream
@@ -45,8 +44,7 @@ from .conftest import IsDatetime, IsNow, IsStr
 try:
     from dbos import DBOS, DBOSConfig, SetWorkflowID
 
-    from pydantic_ai.durable_exec.dbos import DBOSAgent, DBOSMCPServer, DBOSModel
-    from pydantic_ai.durable_exec.dbos._mcp import DBOSMCPToolset
+    from pydantic_ai.durable_exec.dbos import DBOSAgent, DBOSMCPToolset, DBOSModel
 
 except ImportError:  # pragma: lax no cover
     pytest.skip('DBOS is not installed', allow_module_level=True)
@@ -58,14 +56,11 @@ except ImportError:  # pragma: lax no cover
     pytest.skip('logfire not installed', allow_module_level=True)
 
 try:
-    from pydantic_ai.mcp import MCPServerStdio
+    from fastmcp.client.transports import StdioTransport
+
+    from pydantic_ai.mcp import MCPToolset
 except ImportError:  # pragma: lax no cover
     pytest.skip('mcp not installed', allow_module_level=True)
-
-try:
-    from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-except ImportError:  # pragma: lax no cover
-    pytest.skip('fastmcp not installed', allow_module_level=True)
 
 try:
     from pydantic_ai.models.openai import OpenAIChatModel
@@ -102,15 +97,6 @@ def setup_logfire_instrumentation() -> Iterator[None]:
     # Set up logfire for the tests.
     logfire.configure(metrics=False)
     yield
-
-
-@pytest.fixture(autouse=True)
-def _clear_mcp_tool_cache() -> None:
-    """Clear cached tool defs on module-level DBOSMCPServer instances between tests."""
-    for agent in (complex_dbos_agent, seq_complex_dbos_agent):
-        for toolset in agent.toolsets:
-            if isinstance(toolset, DBOSMCPServer):
-                toolset._cached_tool_defs = None  # pyright: ignore[reportPrivateUsage]
 
 
 @contextmanager
@@ -220,7 +206,7 @@ complex_agent = Agent(
     output_type=Response,
     toolsets=[
         FunctionToolset[Deps](tools=[get_country], id='country'),
-        MCPServerStdio('python', ['-m', 'tests.mcp_server'], timeout=20, id='mcp'),
+        MCPToolset(StdioTransport(command='python', args=['-m', 'tests.mcp_server']), init_timeout=20, id='mcp'),
         ExternalToolset(tool_defs=[ToolDefinition(name='external')], id='external'),
     ],
     tools=[get_weather],
@@ -261,10 +247,12 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
             'complex_agent__mcp_server__mcp.call_tool',
             'event_stream_handler',
             'event_stream_handler',
+            'complex_agent__mcp_server__mcp.get_tools',
             'complex_agent__model.request_stream',
             'event_stream_handler',
             'get_weather',
             'event_stream_handler',
+            'complex_agent__mcp_server__mcp.get_tools',
             'complex_agent__model.request_stream',
         ]
     )
@@ -374,7 +362,12 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
                         BasicSpan(content='running tool: get_country'),
                         BasicSpan(
                             content='running tool: get_product_name',
-                            children=[BasicSpan(content='complex_agent__mcp_server__mcp.call_tool')],
+                            children=[
+                                BasicSpan(
+                                    content='complex_agent__mcp_server__mcp.call_tool',
+                                    children=[BasicSpan(content='tools/call get_product_name')],
+                                )
+                            ],
                         ),
                         BasicSpan(
                             content='event_stream_handler',
@@ -394,6 +387,7 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
                                 ),
                             ],
                         ),
+                        BasicSpan(content='complex_agent__mcp_server__mcp.get_tools'),
                         BasicSpan(
                             content='chat gpt-4o',
                             children=[
@@ -438,7 +432,10 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
                                 ),
                             ],
                         ),
-                        BasicSpan(content='running tool: get_weather', children=[BasicSpan(content='get_weather')]),
+                        BasicSpan(
+                            content='running tool: get_weather',
+                            children=[BasicSpan(content='get_weather')],
+                        ),
                         BasicSpan(
                             content='event_stream_handler',
                             children=[
@@ -448,6 +445,7 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
                                 ),
                             ],
                         ),
+                        BasicSpan(content='complex_agent__mcp_server__mcp.get_tools'),
                         BasicSpan(
                             content='chat gpt-4o',
                             children=[
@@ -595,42 +593,6 @@ async def test_complex_agent_run_in_workflow(allow_model_requests: None, dbos: D
     )
 
 
-async def test_mcp_tools_not_cached_when_disabled(allow_model_requests: None, dbos: DBOS) -> None:
-    """Verify that wrapper-level caching is skipped when cache_tools=False.
-
-    With caching disabled, every model request should be preceded by a get_tools step,
-    rather than only the first one populating the cache.
-    """
-    mcp_toolset = next(ts for ts in complex_dbos_agent.toolsets if isinstance(ts, DBOSMCPServer))
-    server = mcp_toolset._server  # pyright: ignore[reportPrivateUsage]
-
-    original_cache_tools = server.cache_tools
-    server.cache_tools = False
-
-    try:
-        wfid = str(uuid.uuid4())
-        with SetWorkflowID(wfid):
-            result = await complex_dbos_agent.run(
-                'Tell me: the capital of the country; the weather there; the product name', deps=Deps(country='Mexico')
-            )
-        assert result.output == snapshot(
-            Response(
-                answers=[
-                    Answer(label='Capital of the country', answer='Mexico City'),
-                    Answer(label='Weather in the capital', answer='Sunny'),
-                    Answer(label='Product Name', answer='Pydantic AI'),
-                ]
-            )
-        )
-
-        steps = await dbos.list_workflow_steps_async(wfid)
-        step_names = [step['function_name'] for step in steps]
-        # Without caching, get_tools should be called 3 times (once per model request)
-        assert step_names.count('complex_agent__mcp_server__mcp.get_tools') == 3
-    finally:
-        server.cache_tools = original_cache_tools
-
-
 # Test sequential tool call works
 async def test_complex_agent_run_sequential_tool(allow_model_requests: None, dbos: DBOS) -> None:
     # Set a workflow ID for testing list steps
@@ -661,10 +623,12 @@ async def test_complex_agent_run_sequential_tool(allow_model_requests: None, dbo
             'event_stream_handler',
             'seq_complex_agent__mcp_server__mcp.call_tool',
             'event_stream_handler',
+            'seq_complex_agent__mcp_server__mcp.get_tools',
             'seq_complex_agent__model.request_stream',
             'event_stream_handler',
             'get_weather',
             'event_stream_handler',
+            'seq_complex_agent__mcp_server__mcp.get_tools',
             'seq_complex_agent__model.request_stream',
         ]
     )
@@ -742,8 +706,8 @@ async def test_dbos_agent():
     assert toolsets[2].id == 'country'
     assert toolsets[2].tools.keys() == {'get_country'}
 
-    # Wrapped 'mcp' MCP server
-    assert isinstance(toolsets[3], DBOSMCPServer)
+    # Wrapped 'mcp' MCP toolset
+    assert isinstance(toolsets[3], DBOSMCPToolset)
     assert toolsets[3].id == 'mcp'
     assert toolsets[3].wrapped == complex_agent.toolsets[2]
 
@@ -1578,7 +1542,13 @@ def return_mcp_instructions(messages: list[ModelMessage], agent_info: AgentInfo)
 mcp_instructions_agent = Agent(
     FunctionModel(return_mcp_instructions),
     name='mcp_instructions_agent',
-    toolsets=[MCPServerStdio('python', ['-m', 'tests.mcp_server'], include_instructions=True, id='mcp')],
+    toolsets=[
+        MCPToolset(
+            StdioTransport(command='python', args=['-m', 'tests.mcp_server']),
+            include_instructions=True,
+            id='mcp',
+        )
+    ],
 )
 mcp_instructions_dbos_agent = DBOSAgent(mcp_instructions_agent)
 
@@ -1589,13 +1559,11 @@ async def test_dbos_mcp_toolset_instructions_propagate(dbos: DBOS):
     assert result.output == snapshot('Be a helpful assistant.')
 
 
-class _TestDBOSMCPToolset(DBOSMCPToolset[int]):
-    def tool_for_tool_def(self, tool_def: ToolDefinition) -> ToolsetTool[int]:
-        raise AssertionError('tool_for_tool_def should not be invoked in this test')  # pragma: no cover
-
-
-_uninit_instructions_toolset = _TestDBOSMCPToolset(
-    MCPServerStdio('python', ['-m', 'tests.mcp_server'], include_instructions=True),
+_uninit_instructions_toolset = DBOSMCPToolset(
+    MCPToolset(
+        StdioTransport(command='python', args=['-m', 'tests.mcp_server']),
+        include_instructions=True,
+    ),
     step_name_prefix='coverage_test',
     step_config={},
 )
@@ -1603,7 +1571,7 @@ _uninit_instructions_toolset = _TestDBOSMCPToolset(
 
 async def test_dbos_mcp_toolset_get_instructions_falls_back_to_step(dbos: DBOS):
     """When the MCP server isn't initialized locally, DBOS wrapper fetches instructions via a step."""
-    run_context = RunContext(deps=0, model=TestModel(), usage=RunUsage())
+    run_context = RunContext(deps=None, model=TestModel(), usage=RunUsage())
 
     instructions = await _uninit_instructions_toolset.get_instructions(run_context)
     assert instructions == InstructionPart(content='Be a helpful assistant.', dynamic=True)
@@ -1612,7 +1580,7 @@ async def test_dbos_mcp_toolset_get_instructions_falls_back_to_step(dbos: DBOS):
 fastmcp_agent = Agent(
     model,
     name='fastmcp_agent',
-    toolsets=[FastMCPToolset('https://mcp.deepwiki.com/mcp', id='deepwiki')],
+    toolsets=[MCPToolset('https://mcp.deepwiki.com/mcp', id='deepwiki')],
 )
 
 fastmcp_dbos_agent = DBOSAgent(fastmcp_agent)
@@ -1642,10 +1610,8 @@ async def test_fastmcp_toolset(allow_model_requests: None, dbos: DBOS):
 
 def test_dbos_mcp_wrapper_visit_and_replace():
     """DBOS MCP wrapper toolsets should not be replaced by visit_and_replace."""
-    from pydantic_ai.durable_exec.dbos._fastmcp_toolset import DBOSFastMCPToolset
-
     toolsets = fastmcp_dbos_agent._toolsets  # pyright: ignore[reportPrivateUsage]
-    dbos_mcp_toolsets = [ts for ts in toolsets if isinstance(ts, DBOSFastMCPToolset)]
+    dbos_mcp_toolsets = [ts for ts in toolsets if isinstance(ts, DBOSMCPToolset)]
     assert len(dbos_mcp_toolsets) >= 1
 
     dbos_mcp_toolset = dbos_mcp_toolsets[0]

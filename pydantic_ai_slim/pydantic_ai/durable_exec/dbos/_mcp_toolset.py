@@ -1,8 +1,5 @@
-# pyright: reportDeprecated=false
-# Wraps the deprecated `MCPServer*` and `FastMCPToolset` for durable execution. Removed in v2.
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any
 
@@ -10,6 +7,7 @@ from dbos import DBOS
 from typing_extensions import Self
 
 from pydantic_ai import AbstractToolset, ToolsetTool, WrapperToolset
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import InstructionPart
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
 
@@ -19,12 +17,12 @@ if TYPE_CHECKING:
     from pydantic_ai.mcp import ToolResult
 
 
-class DBOSMCPToolset(WrapperToolset[AgentDepsT], ABC):
-    """A wrapper for MCP toolset that integrates with DBOS, turning call_tool and get_tools to DBOS steps."""
+class DBOSMCPToolset(WrapperToolset[AgentDepsT]):
+    """A wrapper for `MCPToolset` that integrates with DBOS, turning `call_tool` and `get_tools` into DBOS steps."""
 
     def __init__(
         self,
-        wrapped: AbstractToolset[AgentDepsT],
+        wrapped: MCPToolset[AgentDepsT],
         *,
         step_name_prefix: str,
         step_config: StepConfig,
@@ -79,9 +77,9 @@ class DBOSMCPToolset(WrapperToolset[AgentDepsT], ABC):
 
         self._dbos_wrapped_call_tool_step = wrapped_call_tool_step
 
-    @abstractmethod
     def tool_for_tool_def(self, tool_def: ToolDefinition) -> ToolsetTool[AgentDepsT]:
-        raise NotImplementedError
+        assert isinstance(self.wrapped, MCPToolset)
+        return self.wrapped.tool_for_tool_def(tool_def)
 
     @property
     def id(self) -> str | None:
@@ -113,20 +111,8 @@ class DBOSMCPToolset(WrapperToolset[AgentDepsT], ABC):
         if result is not None:
             return result
         # If instructions are enabled but the server isn't initialized locally, fetch via step.
-        _mcp_types: tuple[type, ...] = ()
-        try:
-            from pydantic_ai.mcp import MCPServer
-
-            _mcp_types += (MCPServer,)
-        except ImportError:
-            pass
-        try:
-            from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-
-            _mcp_types += (FastMCPToolset,)
-        except ImportError:
-            pass
-        if _mcp_types and isinstance(self.wrapped, _mcp_types) and self.wrapped.include_instructions:  # type: ignore[union-attr]
+        assert isinstance(self.wrapped, MCPToolset)
+        if self.wrapped.include_instructions:
             return await self._dbos_wrapped_get_instructions_step(ctx)
         return None
 

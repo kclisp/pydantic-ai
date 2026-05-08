@@ -8,7 +8,6 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import timedelta
 from typing import Any, Literal, cast
-from unittest.mock import patch
 
 import pytest
 from pydantic import BaseModel
@@ -87,7 +86,7 @@ try:
         TemporalAgent,
     )
     from pydantic_ai.durable_exec.temporal._function_toolset import TemporalFunctionToolset
-    from pydantic_ai.durable_exec.temporal._mcp_server import TemporalMCPServer
+    from pydantic_ai.durable_exec.temporal._mcp_toolset import TemporalMCPToolset
     from pydantic_ai.durable_exec.temporal._model import TemporalModel
     from pydantic_ai.durable_exec.temporal._run_context import TemporalRunContext
 except ImportError:  # pragma: lax no cover
@@ -113,14 +112,11 @@ except ImportError:  # pragma: lax no cover
     pytest.skip('logfire not installed', allow_module_level=True)
 
 try:
-    from pydantic_ai.mcp import MCPServerStdio, MCPServerStreamableHTTP
+    from fastmcp.client.transports import StdioTransport
+
+    from pydantic_ai.mcp import MCPToolset
 except ImportError:  # pragma: lax no cover
     pytest.skip('mcp not installed', allow_module_level=True)
-
-try:
-    from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-except ImportError:  # pragma: lax no cover
-    pytest.skip('fastmcp not installed', allow_module_level=True)
 
 try:
     from pydantic_ai.models.openai import OpenAIChatModel, OpenAIResponsesModel
@@ -136,10 +132,6 @@ with workflow.unsafe.imports_passed_through():
         import pandas  # pyright: ignore[reportUnusedImport] # noqa: F401
     except ImportError:  # pragma: lax no cover
         pass
-
-    # https://github.com/temporalio/sdk-python/blob/3244f8bffebee05e0e7efefb1240a75039903dda/tests/test_client.py#L112C1-L113C1
-    from mcp.client.session import ClientSession
-    from mcp.types import ClientRequest
 
     from ._inline_snapshot import snapshot
 
@@ -217,14 +209,6 @@ async def client_with_logfire(temporal_env: WorkflowEnvironment) -> Client:
         f'localhost:{TEMPORAL_PORT}',
         plugins=[PydanticAIPlugin(), LogfirePlugin()],
     )
-
-
-@pytest.fixture(autouse=True)
-def _clear_mcp_tool_cache() -> None:
-    """Clear cached tool defs on module-level TemporalMCPServer instances between tests."""
-    for toolset in complex_temporal_agent.toolsets:
-        if isinstance(toolset, TemporalMCPServer):
-            toolset._cached_tool_defs = None  # pyright: ignore[reportPrivateUsage]
 
 
 # Can't use the `openai_api_key` fixture here because the workflow needs to be defined at the top level of the file.
@@ -311,7 +295,7 @@ complex_agent = Agent(
     output_type=Response,
     toolsets=[
         FunctionToolset[Deps](tools=[get_country], id='country'),
-        MCPServerStdio('python', ['-m', 'tests.mcp_server'], timeout=20, id='mcp'),
+        MCPToolset(StdioTransport(command='python', args=['-m', 'tests.mcp_server']), init_timeout=20, id='mcp'),
         ExternalToolset(tool_defs=[ToolDefinition(name='external')], id='external'),
     ],
     tools=[get_weather],
@@ -525,7 +509,8 @@ async def test_complex_agent_run_in_workflow(
                                     content='StartActivity:agent__complex_agent__mcp_server__mcp__call_tool',
                                     children=[
                                         BasicSpan(
-                                            content='RunActivity:agent__complex_agent__mcp_server__mcp__call_tool'
+                                            content='RunActivity:agent__complex_agent__mcp_server__mcp__call_tool',
+                                            children=[BasicSpan(content='tools/call get_product_name')],
                                         )
                                     ],
                                 )
@@ -543,6 +528,12 @@ async def test_complex_agent_run_in_workflow(
                                         ),
                                     ],
                                 )
+                            ],
+                        ),
+                        BasicSpan(
+                            content='StartActivity:agent__complex_agent__mcp_server__mcp__get_tools',
+                            children=[
+                                BasicSpan(content='RunActivity:agent__complex_agent__mcp_server__mcp__get_tools')
                             ],
                         ),
                         BasicSpan(
@@ -624,6 +615,12 @@ async def test_complex_agent_run_in_workflow(
                                         ),
                                     ],
                                 )
+                            ],
+                        ),
+                        BasicSpan(
+                            content='StartActivity:agent__complex_agent__mcp_server__mcp__get_tools',
+                            children=[
+                                BasicSpan(content='RunActivity:agent__complex_agent__mcp_server__mcp__get_tools')
                             ],
                         ),
                         BasicSpan(
@@ -777,72 +774,6 @@ async def test_complex_agent_run_in_workflow(
             ],
         )
     )
-
-
-async def test_mcp_tools_cached_across_activities(allow_model_requests: None, client: Client):
-    """Verify that MCP tool caching reduces server round-trips across activities.
-
-    The complex agent makes 3 model requests, each preceded by a get_tools activity.
-    With caching at the TemporalMCPServer wrapper level, only the first get_tools activity
-    actually runs (opening an MCP connection and calling `tools/list`). Subsequent get_tools
-    calls return the wrapper's cached tool definitions without scheduling an activity at all.
-    """
-
-    original_send_request = ClientSession.send_request
-    methods_called: list[str] = []
-
-    async def tracking_send_request(self_: ClientSession, request: ClientRequest, *args: Any, **kwargs: Any) -> Any:
-        methods_called.append(request.root.method)
-        return await original_send_request(self_, request, *args, **kwargs)
-
-    with patch.object(ClientSession, 'send_request', tracking_send_request):
-        async with Worker(
-            client,
-            task_queue=TASK_QUEUE,
-            workflows=[ComplexAgentWorkflow],
-            plugins=[AgentPlugin(complex_temporal_agent)],
-        ):
-            coro = client.execute_workflow(
-                ComplexAgentWorkflow.run,
-                args=[
-                    'Tell me: the capital of the country; the weather there; the product name',
-                    Deps(country='Mexico'),
-                ],
-                id=f'{ComplexAgentWorkflow.__name__}_cache_test',
-                task_queue=TASK_QUEUE,
-            )
-            output = await coro
-        assert output is not None
-
-    # 3 get_tools calls are made, but only 1 results in an actual tools/list MCP request
-    assert methods_called.count('tools/list') == 1
-    # call_tool should still make a request each time (not cached)
-    assert methods_called.count('tools/call') == 1
-
-
-async def test_mcp_tools_not_cached_when_disabled(allow_model_requests: None):
-    """Verify that wrapper-level caching is skipped when cache_tools=False.
-
-    Runs outside the Temporal workflow (via .override()) so coverage can track
-    the TemporalMCPServer.get_tools() code path directly.
-    """
-    mcp_toolset = next(ts for ts in complex_temporal_agent.toolsets if isinstance(ts, TemporalMCPServer))
-    server = mcp_toolset._server  # pyright: ignore[reportPrivateUsage]
-
-    original_cache_tools = server.cache_tools
-    server.cache_tools = False
-
-    try:
-        with complex_temporal_agent.override(deps=Deps(country='Mexico')):
-            result = await complex_temporal_agent.run(
-                'Tell me: the capital of the country; the weather there; the product name',
-                deps=Deps(country='The Netherlands'),
-            )
-        assert result.output is not None
-        # Wrapper-level cache should NOT be populated when cache_tools=False
-        assert mcp_toolset._cached_tool_defs is None  # pyright: ignore[reportPrivateUsage]
-    finally:
-        server.cache_tools = original_cache_tools
 
 
 async def test_complex_agent_run(allow_model_requests: None):
@@ -1295,20 +1226,20 @@ async def test_dynamic_toolset_outside_workflow():
 
 # --- MCP-based DynamicToolset test ---
 # Tests that @agent.toolset with an MCP toolset works with Temporal workflows.
-# Uses MCPServerStreamableHTTP (HTTP-based) rather than subprocess-based MCP servers.
-# See https://github.com/pydantic/pydantic-ai/issues/2818 for MCPServer subprocess issues with Temporal.
+# Uses an HTTP-based MCP server rather than subprocess-based MCP servers.
+# See https://github.com/pydantic/pydantic-ai/issues/2818 for subprocess issues with Temporal.
 
 
 mcp_dynamic_toolset_agent = Agent(model, name='mcp_dynamic_toolset_agent')
 
 
 @mcp_dynamic_toolset_agent.toolset(id='mcp_toolset')
-def my_mcp_dynamic_toolset(ctx: RunContext[None]) -> MCPServerStreamableHTTP:
+def my_mcp_dynamic_toolset(ctx: RunContext[None]) -> MCPToolset[None]:
     """Dynamic toolset that returns an MCP toolset.
 
     This tests MCP lifecycle management (context manager enter/exit) within DynamicToolset + Temporal.
     """
-    return MCPServerStreamableHTTP('https://mcp.deepwiki.com/mcp')
+    return MCPToolset('https://mcp.deepwiki.com/mcp')
 
 
 mcp_dynamic_toolset_temporal_agent = TemporalAgent(
@@ -1326,7 +1257,7 @@ class MCPDynamicToolsetAgentWorkflow:
 
 
 async def test_mcp_dynamic_toolset_in_workflow(allow_model_requests: None, client: Client):
-    """Test that @agent.toolset with MCPServerStreamableHTTP works in a Temporal workflow.
+    """Test that @agent.toolset with an HTTP MCP toolset works in a Temporal workflow.
 
     This demonstrates MCP lifecycle management (entering/exiting the MCP toolset context manager)
     within a DynamicToolset wrapped by TemporalDynamicToolset.
@@ -1372,8 +1303,8 @@ async def test_temporal_agent():
     assert isinstance(toolsets[2].wrapped, FunctionToolset)
     assert toolsets[2].wrapped.tools.keys() == {'get_country'}
 
-    # Wrapped 'mcp' MCP server
-    assert isinstance(toolsets[3], TemporalMCPServer)
+    # Wrapped 'mcp' MCP toolset
+    assert isinstance(toolsets[3], TemporalMCPToolset)
     assert toolsets[3].id == 'mcp'
     assert toolsets[3].wrapped == complex_agent.toolsets[2]
 
@@ -2505,7 +2436,13 @@ def return_mcp_instructions(messages: list[ModelMessage], agent_info: AgentInfo)
 mcp_instructions_agent = Agent(
     FunctionModel(return_mcp_instructions),
     name='mcp_instructions_agent',
-    toolsets=[MCPServerStdio('python', ['-m', 'tests.mcp_server'], include_instructions=True, id='mcp')],
+    toolsets=[
+        MCPToolset(
+            StdioTransport(command='python', args=['-m', 'tests.mcp_server']),
+            include_instructions=True,
+            id='mcp',
+        )
+    ],
 )
 
 mcp_instructions_temporal_agent = TemporalAgent(mcp_instructions_agent, activity_config=BASE_ACTIVITY_CONFIG)
@@ -2796,7 +2733,7 @@ def test_temporal_run_context_serializes_usage():
 fastmcp_agent = Agent(
     model,
     name='fastmcp_agent',
-    toolsets=[FastMCPToolset('https://mcp.deepwiki.com/mcp', id='deepwiki')],
+    toolsets=[MCPToolset('https://mcp.deepwiki.com/mcp', id='deepwiki')],
 )
 
 

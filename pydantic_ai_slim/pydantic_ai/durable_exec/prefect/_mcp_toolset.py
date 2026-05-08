@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from abc import ABC
 from typing import TYPE_CHECKING, Any
 
 from prefect import task
@@ -13,15 +12,15 @@ from ._toolset import PrefectWrapperToolset
 from ._types import TaskConfig, default_task_config
 
 if TYPE_CHECKING:
-    from pydantic_ai.mcp import MCPServer, ToolResult
+    from pydantic_ai.mcp import MCPToolset, ToolResult
 
 
-class PrefectMCPServer(PrefectWrapperToolset[AgentDepsT], ABC):
-    """A wrapper for MCPServer that integrates with Prefect, turning call_tool and get_tools into Prefect tasks."""
+class PrefectMCPToolset(PrefectWrapperToolset[AgentDepsT]):
+    """A wrapper for `MCPToolset` that integrates with Prefect, turning `call_tool` into a Prefect task."""
 
     def __init__(
         self,
-        wrapped: MCPServer,
+        wrapped: MCPToolset[AgentDepsT],
         *,
         task_config: TaskConfig,
     ):
@@ -36,7 +35,7 @@ class PrefectMCPServer(PrefectWrapperToolset[AgentDepsT], ABC):
             ctx: RunContext[AgentDepsT],
             tool: ToolsetTool[AgentDepsT],
         ) -> ToolResult:
-            return await super(PrefectMCPServer, self).call_tool(tool_name, tool_args, ctx, tool)
+            return await super(PrefectMCPToolset, self).call_tool(tool_name, tool_args, ctx, tool)
 
         self._call_tool_task = _call_tool_task
 

@@ -1,5 +1,3 @@
-# pyright: reportDeprecated=false
-# References deprecated `MCPServer*` / `FastMCPToolset` for backward-compat dispatch. Removed in v2.
 from __future__ import annotations
 
 from collections.abc import AsyncIterable, AsyncIterator, Iterator, Sequence
@@ -110,31 +108,15 @@ class DBOSAgent(WrapperAgent[AgentDepsT, OutputDataT], DBOSConfiguredInstance):
         dbosagent_name = self._name
 
         def dbosify_toolset(toolset: AbstractToolset[AgentDepsT]) -> AbstractToolset[AgentDepsT]:
-            # Replace MCPServer with DBOSMCPServer
             try:
-                from pydantic_ai.mcp import MCPServer
+                from pydantic_ai.mcp import MCPToolset
 
-                from ._mcp_server import DBOSMCPServer
+                from ._mcp_toolset import DBOSMCPToolset
             except ImportError:
                 pass
             else:
-                if isinstance(toolset, MCPServer):
-                    return DBOSMCPServer(
-                        wrapped=toolset,
-                        step_name_prefix=dbosagent_name,
-                        step_config=self._mcp_step_config,
-                    )
-
-            # Replace FastMCPToolset with DBOSFastMCPToolset
-            try:
-                from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-
-                from ._fastmcp_toolset import DBOSFastMCPToolset
-            except ImportError:
-                pass
-            else:
-                if isinstance(toolset, FastMCPToolset):
-                    return DBOSFastMCPToolset(
+                if isinstance(toolset, MCPToolset):
+                    return DBOSMCPToolset(
                         wrapped=toolset,
                         step_name_prefix=dbosagent_name,
                         step_config=self._mcp_step_config,
@@ -288,7 +270,7 @@ class DBOSAgent(WrapperAgent[AgentDepsT, OutputDataT], DBOSConfiguredInstance):
 
     @contextmanager
     def _dbos_overrides(self) -> Iterator[None]:
-        # Override with DBOSModel and DBOSMCPServer in the toolsets.
+        # Override with DBOSModel and DBOSMCPToolset in the toolsets.
         # Use the configured parallel execution mode for deterministic event ordering during DBOS replay.
         with (
             super().override(model=self._model, toolsets=self._toolsets, tools=[]),

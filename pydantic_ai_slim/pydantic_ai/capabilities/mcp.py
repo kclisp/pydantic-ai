@@ -13,13 +13,10 @@ from pydantic_ai.toolsets import AbstractToolset
 from .builtin_or_local import BuiltinOrLocalTool
 
 try:
-    from pydantic_ai.mcp import MCPServer, MCPToolset
-    from pydantic_ai.toolsets.fastmcp import FastMCPToolset  # pyright: ignore[reportDeprecated]
+    from pydantic_ai.mcp import MCPToolset
 except ImportError:  # pragma: lax no cover
     if not TYPE_CHECKING:
-        MCPServer = Any  # type: ignore[assignment,misc]
         MCPToolset = Any  # type: ignore[assignment,misc]
-        FastMCPToolset = Any  # type: ignore[assignment,misc]
 
 
 @dataclass(init=False)
@@ -55,12 +52,7 @@ class MCP(BuiltinOrLocalTool[AgentDepsT]):
         builtin: MCPServerTool
         | Callable[[RunContext[AgentDepsT]], Awaitable[MCPServerTool | None] | MCPServerTool | None]
         | bool = True,
-        local: MCPToolset[AgentDepsT]
-        | MCPServer
-        | FastMCPToolset[AgentDepsT]  # pyright: ignore[reportDeprecated]
-        | Callable[..., Any]
-        | Literal[False]
-        | None = None,
+        local: MCPToolset[AgentDepsT] | Callable[..., Any] | Literal[False] | None = None,
         id: str | None = None,
         authorization_token: str | None = None,
         headers: dict[str, str] | None = None,

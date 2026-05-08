@@ -1,8 +1,5 @@
-# pyright: reportDeprecated=false
-# Wraps the deprecated `MCPServer*` and `FastMCPToolset` for durable execution. Removed in v2.
 from __future__ import annotations
 
-from abc import ABC, abstractmethod
 from collections.abc import Callable, Sequence
 from typing import TYPE_CHECKING, Any, Literal
 
@@ -11,14 +8,14 @@ from temporalio.workflow import ActivityConfig
 
 from pydantic_ai import ToolsetTool
 from pydantic_ai.exceptions import UserError
+from pydantic_ai.mcp import MCPToolset
 from pydantic_ai.messages import InstructionPart
 from pydantic_ai.tools import AgentDepsT, RunContext, ToolDefinition
-from pydantic_ai.toolsets import AbstractToolset
-
-from ._run_context import TemporalRunContext, deserialize_run_context
 
 if TYPE_CHECKING:
     from pydantic_ai.agent.abstract import AbstractAgent
+
+from ._run_context import TemporalRunContext, deserialize_run_context
 from ._toolset import (
     CallToolParams,
     CallToolResult,
@@ -27,10 +24,12 @@ from ._toolset import (
 )
 
 
-class TemporalMCPToolset(TemporalWrapperToolset[AgentDepsT], ABC):
+class TemporalMCPToolset(TemporalWrapperToolset[AgentDepsT]):
+    """A wrapper for `MCPToolset` that integrates with Temporal, turning `get_tools` and `call_tool` into activities."""
+
     def __init__(
         self,
-        toolset: AbstractToolset[AgentDepsT],
+        toolset: MCPToolset[AgentDepsT],
         *,
         activity_name_prefix: str,
         activity_config: ActivityConfig,
@@ -107,9 +106,9 @@ class TemporalMCPToolset(TemporalWrapperToolset[AgentDepsT], ABC):
             call_tool_activity
         )
 
-    @abstractmethod
     def tool_for_tool_def(self, tool_def: ToolDefinition) -> ToolsetTool[AgentDepsT]:
-        raise NotImplementedError
+        assert isinstance(self.wrapped, MCPToolset)
+        return self.wrapped.tool_for_tool_def(tool_def)
 
     @property
     def temporal_activities(self) -> list[Callable[..., Any]]:
@@ -122,20 +121,8 @@ class TemporalMCPToolset(TemporalWrapperToolset[AgentDepsT], ABC):
             return await super().get_instructions(ctx)
 
         # If instructions are enabled, fetch via activity (the server isn't initialized locally in workflows).
-        _mcp_types: tuple[type, ...] = ()
-        try:
-            from pydantic_ai.mcp import MCPServer
-
-            _mcp_types += (MCPServer,)
-        except ImportError:
-            pass
-        try:
-            from pydantic_ai.toolsets.fastmcp import FastMCPToolset
-
-            _mcp_types += (FastMCPToolset,)
-        except ImportError:
-            pass
-        if _mcp_types and isinstance(self.wrapped, _mcp_types) and self.wrapped.include_instructions:  # type: ignore[union-attr]
+        assert isinstance(self.wrapped, MCPToolset)
+        if self.wrapped.include_instructions:
             serialized_run_context = self.run_context_type.serialize_run_context(ctx)
             activity_config: ActivityConfig = {'summary': f'get instructions: {self.id}', **self.activity_config}
             return await workflow.execute_activity(

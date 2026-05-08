@@ -74,6 +74,10 @@ def _workflow_runner(runner: WorkflowRunner | None) -> WorkflowRunner:
             'pydantic_ai',
             'pydantic',
             'pydantic_core',
+            # `fastmcp` reads `.env` at import time via `pydantic_settings`, which triggers
+            # `pathlib.Path.expanduser`. Pass both through so workflow validation doesn't blow up.
+            'fastmcp',
+            'pydantic_settings',
             'logfire',
             'rich',
             'httpx',
