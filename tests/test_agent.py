@@ -5905,7 +5905,12 @@ class TestMultipleToolCalls:
                     ],
                 )
             # Retry round: model corrects the edit.
-            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('edit', {'text': 'CORRECT'}),
+                    ToolCallPart('final_result', {'value': 'finished'}),
+                ]
+            )
 
         agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='exhaustive')
 
@@ -5955,7 +5960,12 @@ class TestMultipleToolCalls:
                         ToolCallPart('edit', {'text': 'NONEXISTENT'}),
                     ],
                 )
-            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('edit', {'text': 'CORRECT'}),
+                    ToolCallPart('final_result', {'value': 'finished'}),
+                ]
+            )
 
         agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='graceful')
 
@@ -5988,7 +5998,12 @@ class TestMultipleToolCalls:
                         ToolCallPart('final_result', {'value': 'finished'}),
                     ],
                 )
-            return ModelResponse(parts=[ToolCallPart('final_result', {'value': 'finished'})])
+            return ModelResponse(
+                parts=[
+                    ToolCallPart('edit', {'text': 'CORRECT'}),
+                    ToolCallPart('final_result', {'value': 'finished'}),
+                ]
+            )
 
         agent = Agent(FunctionModel(return_model), output_type=OutputType, end_strategy='early')
 
